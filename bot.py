@@ -1,238 +1,295 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+בוט טלגרם להוספת כתוביות מתורגמות
+"""
+
 import os
 import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from deep_translator import GoogleTranslator
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
-import tempfile
-from flask import Flask
-from threading import Thread
-import requests
-import gc
+import whisper
+from googletrans import Translator
+import asyncio
+from pathlib import Path
+import time
 
-# --- לוגים ---
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# הגדרת לוגים
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# --- Flask לצורך שמירה על חיות השרת ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Bot is running!"
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-# --- הפקודה /start ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎬 שלום! שלח לי סרטון (עד 10 דקות / עד 50MB) ואני אחזיר אותו עם כתוביות בעברית."
-    )
-
-# --- תמלול עם Groq (מעלים קובץ אודיו ומקבלים JSON) ---
-def transcribe_with_groq(audio_path):
-    GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-    if not GROQ_API_KEY:
-        raise Exception("GROQ_API_KEY לא מוגדר!")
-
-    url = "https://api.groq.com/openai/v1/audio/transcriptions"
-    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-
-    with open(audio_path, 'rb') as audio_file:
-        files = {
-            'file': audio_file,
-            'model': (None, 'whisper-large-v3'),
-            'language': (None, 'en'),
-            'response_format': (None, 'verbose_json'),
-            'timestamp_granularities[]': (None, 'segment')
-        }
-        response = requests.post(url, headers=headers, files=files, timeout=300)
-
-    if response.status_code != 200:
-        raise Exception(f"Groq API Error: {response.text}")
-
-    return response.json()
-
-# --- טיפול בסרטון מהמשתמש ---
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video_path = None
-    audio_path = None
-    output_path = None
-    video = None
-
-    try:
-        if not update.message.video:
-            await update.message.reply_text("אנא שלח/י קובץ וידאו (לא קובץ מדיה אחר).")
-            return
-
-        if update.message.video.file_size > 50 * 1024 * 1024:
-            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 50MB")
-            return
-
-        status_msg = await update.message.reply_text("⏳ מוריד ומעבד את הסרטון...")
-
-        # הורדת הסרטון לטמפ
-        video_file = await update.message.video.get_file()
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
-            await video_file.download_to_drive(temp_video.name)
-            video_path = temp_video.name
-
-        await status_msg.edit_text("🎤 מחלץ אודיו...")
-
-        video = VideoFileClip(video_path)
-        if video.duration > 600:
-            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 10 דקות")
-            video.close()
-            os.remove(video_path)
-            return
-
-        audio_path = video_path.replace('.mp4', '.mp3')
-        video.audio.write_audiofile(audio_path, verbose=False, logger=None)
-
-        video.close()
-        video = None
-        gc.collect()
-
-        await status_msg.edit_text("🗣️ מתמלל את האודיו (Groq)...")
-
-        result = transcribe_with_groq(audio_path)
-        segments = result.get('segments', [])
-
-        if not segments:
-            await update.message.reply_text("❌ לא נמצא דיבור באודיו")
-            return
-
-        gc.collect()
-
-        await status_msg.edit_text("🌍 מתרגם לעברית...")
-
-        translator = GoogleTranslator(source='en', target='iw')
-        subtitles = []
-        for seg in segments:
-            text = seg.get('text', '').strip()
-            if text and len(text) > 1:
-                try:
-                    translated = translator.translate(text)
-                    subtitles.append({
-                        'start': seg['start'],
-                        'end': seg['end'],
-                        'text': translated
-                    })
-                except Exception:
-                    continue
-
-        if not subtitles:
-            await update.message.reply_text("❌ לא נמצא טקסט לתרגום")
-            return
-
-        await status_msg.edit_text("🎨 מייצר כתוביות על הסרטון...")
-
-        # נתיב לפונט בעברית — ודא שהקובץ קיים בתיקיית fonts/
-        font_path = "fonts/NotoSansHebrew-Regular.ttf"
-
-        video = VideoFileClip(video_path)
-        txt_clips = []
-
-        for sub in subtitles:
-            # לפעמים צריך להפוך מחרוזת RTL — ננסה הפיכה כדי להבטיח קריאות
-            text_to_write = sub['text'][::-1]
-
-            txt_clip = (TextClip(
-                text_to_write,
-                fontsize=28,
-                color='white',
-                bg_color='black',
-                font=font_path,
-                method='caption',
-                size=(int(video.w * 0.85), None)
+class SubtitleBot:
+    def __init__(self):
+        """אתחול הבוט"""
+        logger.info("מאתחל את הבוט...")
+        self.model = whisper.load_model("tiny")  # tiny למהירות
+        self.translator = Translator()
+        logger.info("הבוט מוכן!")
+    
+    def transcribe_video(self, video_path):
+        """תמלול הסרטון"""
+        logger.info(f"מתמלל: {video_path}")
+        result = self.model.transcribe(video_path, language="en", verbose=False)
+        logger.info(f"נמצאו {len(result['segments'])} קטעים")
+        return result
+    
+    def translate_text(self, text):
+        """תרגום לעברית"""
+        for attempt in range(3):
+            try:
+                translation = self.translator.translate(text, src='en', dest='he')
+                return translation.text
+            except Exception as e:
+                if attempt < 2:
+                    time.sleep(1)
+                else:
+                    logger.warning(f"שגיאה בתרגום: {e}")
+                    return text
+    
+    def format_time(self, seconds):
+        """המרה לפורמט SRT"""
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+    
+    def create_srt(self, segments, output_path):
+        """יצירת קובץ כתוביות"""
+        logger.info("מתרגם לעברית...")
+        
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for i, seg in enumerate(segments, 1):
+                hebrew = self.translate_text(seg['text'].strip())
+                start = self.format_time(seg['start'])
+                end = self.format_time(seg['end'])
+                
+                f.write(f"{i}\n{start} --> {end}\n{hebrew}\n\n")
+        
+        logger.info(f"קובץ SRT נוצר: {output_path}")
+    
+    def add_subs_to_video(self, video_path, srt_path, output_path):
+        """הוספת כתוביות לסרטון עם גופן עברי"""
+        logger.info("מוסיף כתוביות לסרטון...")
+        
+        # נתיב לגופן העברי
+        font_path = "גופנים/NotoSansHebrew-VariableFont_wdth,wght.ttf"
+        
+        # בדיקה אם הגופן קיים
+        if not os.path.exists(font_path):
+            logger.warning("גופן עברי לא נמצא, משתמש בגופן ברירת מחדל")
+            font_path = None
+        
+        # בניית פקודת FFmpeg
+        if font_path:
+            # עם גופן עברי מותאם אישית
+            srt_escaped = srt_path.replace('\\', '/').replace(':', '\\:')
+            font_escaped = font_path.replace('\\', '/').replace(':', '\\:')
+            
+            cmd = (
+                f"ffmpeg -i '{video_path}' "
+                f"-vf \"subtitles='{srt_escaped}':fontsdir='גופנים':force_style='"
+                f"FontName=Noto Sans Hebrew,"
+                f"FontSize=20,"
+                f"PrimaryColour=&HFFFFFF&,"
+                f"OutlineColour=&H000000&,"
+                f"BorderStyle=3,"
+                f"Outline=2,"
+                f"Shadow=1,"
+                f"Bold=1,"
+                f"MarginV=30'\" "
+                f"-c:a copy '{output_path}' -y -loglevel error"
             )
-            .set_position(('center', int(video.h * 0.82)))
-            .set_start(sub['start'])
-            .set_duration(sub['end'] - sub['start']))
+        else:
+            # ללא גופן מותאם (ברירת מחדל)
+            cmd = (
+                f"ffmpeg -i '{video_path}' "
+                f"-vf \"subtitles='{srt_path}':force_style='FontSize=20,PrimaryColour=&HFFFFFF&,Bold=1'\" "
+                f"-c:a copy '{output_path}' -y -loglevel error"
+            )
+        
+        result = os.system(cmd)
+        
+        if result == 0:
+            logger.info(f"סרטון מוכן: {output_path}")
+            return True
+        else:
+            logger.error("שגיאה בהוספת כתוביות")
+            return False
 
-            txt_clips.append(txt_clip)
+# יצירת מופע גלובלי של הבוט
+subtitle_bot = SubtitleBot()
 
-        final_video = CompositeVideoClip([video] + txt_clips)
-        output_path = video_path.replace('.mp4', '_subtitled.mp4')
+# פונקציות הטלגרם
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """פקודת /start"""
+    welcome_text = """
+🎬 *בוט כתוביות מתורגמות*
 
-        final_video.write_videofile(
-            output_path,
-            codec='libx264',
-            audio_codec='aac',
-            preset='ultrafast',
-            threads=2,
-            verbose=False,
-            logger=None
+ברוכים הבאים! 👋
+
+*איך זה עובד?*
+1️⃣ שלח לי סרטון (עד 50MB)
+2️⃣ אני אתמלל את האנגלית
+3️⃣ אתרגם לעברית
+4️⃣ אשלח לך סרטון + קובץ SRT
+
+*הערות חשובות:*
+⚡ העיבוד לוקח 2-5 דקות
+📱 סרטונים ארוכים מדי עלולים לכשל
+🌐 צריך חיבור אינטרנט טוב
+
+*פקודות:*
+/start - הודעת פתיחה
+/help - עזרה
+
+שלח סרטון כדי להתחיל! 🚀
+    """
+    await update.message.reply_text(welcome_text, parse_mode='Markdown')
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """פקודת /help"""
+    help_text = """
+❓ *עזרה*
+
+*איך משתמשים?*
+פשוט שלח סרטון לבוט!
+
+*מה הגבלות הגודל?*
+עד 50MB (הגבלת טלגרם)
+
+*כמה זמן זה לוקח?*
+• סרטון של 1 דקה: ~2 דקות
+• סרטון של 5 דקות: ~5 דקות
+
+*מה עושים אם יש שגיאה?*
+נסה סרטון קטן יותר או פנה אלי
+
+*פורמטים נתמכים:*
+MP4, MOV, AVI, MKV
+
+צריך עזרה נוספת? שלח הודעה! 💬
+    """
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """טיפול בסרטון שנשלח"""
+    video = update.message.video
+    
+    # בדיקת גודל
+    if video.file_size > 50 * 1024 * 1024:  # 50MB
+        await update.message.reply_text(
+            "❌ הסרטון גדול מדי! (מקסימום 50MB)\n"
+            "נסה לדחוס אותו או לשלוח סרטון קצר יותר."
+        )
+        return
+    
+    # הודעת התחלה
+    status_msg = await update.message.reply_text(
+        "⏳ *מקבל את הסרטון...*",
+        parse_mode='Markdown'
+    )
+    
+    try:
+        # הורדת הסרטון
+        file = await context.bot.get_file(video.file_id)
+        video_path = f"downloads/{video.file_id}.mp4"
+        os.makedirs("downloads", exist_ok=True)
+        os.makedirs("output", exist_ok=True)
+        
+        await file.download_to_drive(video_path)
+        
+        # תמלול
+        await status_msg.edit_text("🎤 *מתמלל את האודיאו...*", parse_mode='Markdown')
+        result = subtitle_bot.transcribe_video(video_path)
+        
+        # תרגום
+        await status_msg.edit_text(
+            f"📝 *מתרגם {len(result['segments'])} קטעים לעברית...*",
+            parse_mode='Markdown'
+        )
+        srt_path = f"output/{video.file_id}.srt"
+        subtitle_bot.create_srt(result['segments'], srt_path)
+        
+        # הוספה לסרטון
+        await status_msg.edit_text("🎥 *מוסיף כתוביות לסרטון...*", parse_mode='Markdown')
+        output_video = f"output/{video.file_id}_hebrew.mp4"
+        success = subtitle_bot.add_subs_to_video(video_path, srt_path, output_video)
+        
+        if not success:
+            raise Exception("Failed to add subtitles")
+        
+        # שליחת התוצאות
+        await status_msg.edit_text("📤 *שולח את הקבצים...*", parse_mode='Markdown')
+        
+        # שליחת הסרטון
+        with open(output_video, 'rb') as video_file:
+            await update.message.reply_video(
+                video=video_file,
+                caption="✅ *הסרטון עם כתוביות בעברית!*",
+                parse_mode='Markdown'
+            )
+        
+        # שליחת קובץ SRT
+        with open(srt_path, 'rb') as srt_file:
+            await update.message.reply_document(
+                document=srt_file,
+                filename="hebrew_subtitles.srt",
+                caption="📄 *קובץ הכתוביות (SRT)*",
+                parse_mode='Markdown'
+            )
+        
+        await status_msg.delete()
+        
+        # ניקוי
+        os.remove(video_path)
+        os.remove(output_video)
+        os.remove(srt_path)
+        
+    except Exception as e:
+        logger.error(f"שגיאה בעיבוד: {e}")
+        await status_msg.edit_text(
+            "❌ *אופס! משהו השתבש*\n\n"
+            "נסה:\n"
+            "• סרטון קטן יותר\n"
+            "• פורמט אחר\n"
+            "• לשלוח שוב\n\n"
+            f"שגיאה טכנית: `{str(e)[:100]}`",
+            parse_mode='Markdown'
         )
 
-        final_video.close()
-        video.close()
-        gc.collect()
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """טיפול בקובץ שנשלח כמסמך"""
+    await update.message.reply_text(
+        "💡 *טיפ*: שלח את הסרטון כסרטון (לא כקובץ)\n\n"
+        "לחץ על 📎 בטלגרם ובחר 'וידאו' במקום 'קובץ'",
+        parse_mode='Markdown'
+    )
 
-        await status_msg.edit_text("📤 שולח את הסרטון המוכתם...")
-
-        with open(output_path, 'rb') as video_file_to_send:
-            await update.message.reply_video(
-                video=video_file_to_send,
-                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!",
-                read_timeout=120,
-                write_timeout=120
-            )
-
-        await status_msg.delete()
-
-    except Exception as e:
-        logger.exception("שגיאה במהלך עיבוד הווידאו")
-        try:
-            await update.message.reply_text(f"❌ שגיאה: {str(e)}")
-        except:
-            pass
-
-    finally:
-        for file_path in [video_path, audio_path, output_path]:
-            try:
-                if file_path and os.path.exists(file_path):
-                    os.remove(file_path)
-            except Exception:
-                pass
-        try:
-            if video:
-                video.close()
-        except:
-            pass
-        gc.collect()
-
-# --- handler לשגיאות כלליות ---
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Exception: {context.error}")
-
-# --- הפעלת הבוט (Polling) + Flask ---
-def run_bot():
-    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+def main():
+    """הפעלת הבוט"""
+    # קבלת ה-TOKEN מ-Environment Variable
+    TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    
     if not TOKEN:
-        logger.error("❌ TELEGRAM_BOT_TOKEN לא מוגדר!")
+        logger.error("❌ TELEGRAM_BOT_TOKEN לא הוגדר!")
         return
-
-    GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-    if not GROQ_API_KEY:
-        logger.error("❌ GROQ_API_KEY לא מוגדר!")
-        return
-
+    
+    # יצירת האפליקציה
     application = Application.builder().token(TOKEN).build()
+    
+    # הוספת handlers
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    application.add_error_handler(error_handler)
-
-    logger.info("🤖 הבוט מתחיל לרוץ...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
-def run_flask():
-    port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    application.add_handler(MessageHandler(filters.Document.VIDEO, handle_document))
+    
+    # הפעלת הבוט
+    logger.info("🚀 הבוט פועל!")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    run_bot()
+    main()
