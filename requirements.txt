@@ -5,4 +5,5 @@ deep-translator
 moviepy
 flask
 imageio[ffmpeg]
+decorator
 requests
