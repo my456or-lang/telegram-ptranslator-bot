@@ -3,12 +3,16 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip
 import tempfile
 from flask import Flask
 from threading import Thread
 import requests
 import gc
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+from bidi.algorithm import get_display
+import arabic_reshaper
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -64,6 +68,119 @@ def transcribe_with_groq(audio_path):
     
     return response.json()
 
+def prepare_hebrew_text(text):
+    """הכנת טקסט עברי לתצוגה נכונה"""
+    try:
+        reshaped_text = arabic_reshaper.reshape(text)
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
+    except Exception as e:
+        logger.warning(f"Failed to prepare Hebrew text: {e}")
+        return text
+
+def get_font(size=40):
+    """מציאת פונט עברי מתאים"""
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
+    ]
+    
+    for font_path in font_paths:
+        try:
+            if os.path.exists(font_path):
+                logger.info(f"✅ Using font: {font_path}")
+                return ImageFont.truetype(font_path, size)
+        except Exception as e:
+            logger.debug(f"❌ Could not load font {font_path}: {e}")
+            continue
+    
+    logger.warning("⚠️ לא נמצא פונט TTF, משתמש בפונט ברירת מחדל")
+    try:
+        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
+    except:
+        return ImageFont.load_default()
+
+def wrap_text(text, font, max_width, draw):
+    """חלוקת טקסט לשורות לפי רוחב מקסימלי"""
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        try:
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            width = bbox[2] - bbox[0]
+        except:
+            width = draw.textsize(test_line, font=font)[0]
+        
+        if width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines
+
+def make_text_image(text, width, height):
+    """יצירת תמונה עם טקסט עברי"""
+    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    hebrew_text = prepare_hebrew_text(text)
+    font = get_font(size=36)
+    
+    max_text_width = int(width * 0.9)
+    lines = wrap_text(hebrew_text, font, max_text_width, draw)
+    
+    line_height = 45
+    total_height = len(lines) * line_height
+    y_start = (height - total_height) // 2
+    
+    for i, line in enumerate(lines):
+        try:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except:
+            text_width, text_height = draw.textsize(line, font=font)
+        
+        x = (width - text_width) // 2
+        y = y_start + (i * line_height)
+        
+        padding = 12
+        draw.rectangle(
+            [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
+            fill=(0, 0, 0, 200)
+        )
+        
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+    
+    return np.array(img)
+
+def create_hebrew_subtitle_clip(text, start, duration, video_size):
+    """יצירת קליפ כתובית עברית"""
+    width, height = video_size
+    subtitle_height = 150
+    
+    def make_frame(t):
+        return make_text_image(text, width, subtitle_height)
+    
+    clip = VideoClip(make_frame, duration=duration)
+    clip = clip.set_start(start)
+    clip = clip.set_position(('center', height - subtitle_height - 20))
+    
+    return clip
+
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_path = None
     audio_path = None
@@ -75,13 +192,15 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 50MB")
             return
         
-        status_msg = await update.message.reply_text("⏳ מעבד את הסרטון... (עם Groq זה מהיר!)")
+        status_msg = await update.message.reply_text("⏳ מעבד את הסרטון...")
         
         video_file = await update.message.video.get_file()
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
             await video_file.download_to_drive(temp_video.name)
             video_path = temp_video.name
+        
+        logger.info(f"Video downloaded: {video_path}")
         
         await status_msg.edit_text("🎤 מחלץ אודיו...")
         
@@ -96,14 +215,19 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         audio_path = video_path.replace('.mp4', '.mp3')
         video.audio.write_audiofile(audio_path, verbose=False, logger=None)
         
+        video_size = video.size
+        logger.info(f"Video size: {video_size}")
+        
         video.close()
         video = None
         gc.collect()
         
-        await status_msg.edit_text("🗣️ מתמלל דיבור עם Groq (מהיר!)...")
+        await status_msg.edit_text("🗣️ מתמלל דיבור עם Groq...")
         
         result = transcribe_with_groq(audio_path)
         segments = result.get('segments', [])
+        
+        logger.info(f"Found {len(segments)} segments")
         
         if not segments:
             await update.message.reply_text("❌ לא נמצא דיבור באודיו")
@@ -126,55 +250,41 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'end': seg['end'],
                         'text': translated
                     })
-                except:
+                    logger.info(f"Translated: {text[:30]} -> {translated[:30]}")
+                except Exception as e:
+                    logger.error(f"Translation error: {e}")
                     continue
         
         if not subtitles:
             await update.message.reply_text("❌ לא נמצא טקסט לתרגום")
             return
         
+        logger.info(f"Created {len(subtitles)} subtitles")
+        
         await status_msg.edit_text("🎨 מוסיף כתוביות לסרטון...")
         
         video = VideoFileClip(video_path)
         
         txt_clips = []
-        for sub in subtitles:
+        for i, sub in enumerate(subtitles):
             try:
-                txt_clip = (TextClip(
+                clip = create_hebrew_subtitle_clip(
                     sub['text'],
-                    fontsize=36,
-                    color='white',
-                    bg_color='black',
-                    font='DejaVu-Sans-Bold',
-                    method='caption',
-                    size=(video.w * 0.9, None),
-                    stroke_color='black',
-                    stroke_width=2
+                    sub['start'],
+                    sub['end'] - sub['start'],
+                    video_size
                 )
-                .set_position(('center', video.h * 0.82))
-                .set_start(sub['start'])
-                .set_duration(sub['end'] - sub['start']))
-                
-                txt_clips.append(txt_clip)
+                txt_clips.append(clip)
+                logger.info(f"Created subtitle clip {i+1}/{len(subtitles)}")
             except Exception as e:
-                logger.error(f"Failed to create text clip: {e}")
-                try:
-                    txt_clip = (TextClip(
-                        sub['text'],
-                        fontsize=36,
-                        color='white',
-                        bg_color='black',
-                        font='DejaVu-Sans',
-                        method='caption',
-                        size=(video.w * 0.9, None)
-                    )
-                    .set_position(('center', video.h * 0.82))
-                    .set_start(sub['start'])
-                    .set_duration(sub['end'] - sub['start']))
-                    
-                    txt_clips.append(txt_clip)
-                except:
-                    continue
+                logger.error(f"Failed to create subtitle clip {i}: {e}")
+                continue
+        
+        if not txt_clips:
+            await update.message.reply_text("❌ נכשל ביצירת כתוביות")
+            return
+        
+        logger.info(f"Compositing video with {len(txt_clips)} subtitle clips")
         
         final_video = CompositeVideoClip([video] + txt_clips)
         output_path = video_path.replace('.mp4', '_subtitled.mp4')
@@ -188,6 +298,8 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             verbose=False,
             logger=None
         )
+        
+        logger.info("Video compositing complete")
         
         final_video.close()
         video.close()
@@ -204,10 +316,14 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         
         await status_msg.delete()
+        logger.info("Video sent successfully!")
         
     except Exception as e:
-        logger.error(f"Error: {e}")
-        await update.message.reply_text(f"❌ שגיאה: {str(e)}")
+        logger.error(f"Error: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ שגיאה: {str(e)}")
+        except:
+            pass
         
     finally:
         try:
@@ -220,13 +336,14 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
+                    logger.info(f"Cleaned up: {file_path}")
             except Exception as e:
                 logger.error(f"Failed to delete {file_path}: {e}")
         
         gc.collect()
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Exception: {context.error}")
+    logger.error(f"Exception: {context.error}", exc_info=context.error)
 
 def run_bot():
     TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
