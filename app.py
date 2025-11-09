@@ -132,7 +132,8 @@ def wrap_text(text, font, max_width, draw):
     return lines
 
 def make_text_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי"""
+    """יצירת תמונה עם טקסט עברי - מחזירה RGB במקום RGBA"""
+    # יצירת תמונה שקופה זמנית
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
@@ -165,7 +166,11 @@ def make_text_image(text, width, height):
         
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
     
-    return np.array(img)
+    # המרה ל-RGB (3 ערוצים) על רקע שחור
+    rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
+    rgb_img.paste(img, (0, 0), img)  # משתמש ב-alpha channel כמסכה
+    
+    return np.array(rgb_img)
 
 def create_hebrew_subtitle_clip(text, start, duration, video_size):
     """יצירת קליפ כתובית עברית"""
@@ -208,6 +213,13 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if video.duration > 600:
             await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 10 דקות")
+            video.close()
+            os.remove(video_path)
+            return
+        
+        # בדיקה שיש אודיו
+        if video.audio is None:
+            await update.message.reply_text("❌ הסרטון לא מכיל אודיו!")
             video.close()
             os.remove(video_path)
             return
