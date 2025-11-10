@@ -1,17 +1,16 @@
-# 🎬 GroqSubsBot — תרגום כתוביות אוטומטי לעברית
+# GroqSubsBot
 
-בוט טלגרם שמתרגם כתוביות מסרטונים באנגלית לעברית 🇮🇱  
-כולל תמלול אודיו, תרגום, והטמעת כתוביות בתוך הסרטון — הכול אוטומטי ⚡
+🎬 Hebrew subtitle translator bot powered by Groq AI
 
----
+## Features
+- Transcribes video audio using Groq Whisper
+- Translates to Hebrew
+- Adds Hebrew subtitles to video
+- Fast and free!
 
-## ✨ תכונות עיקריות
-- 🎤 תמלול אודיו באנגלית באמצעות **Groq Whisper**
-- 🌍 תרגום אוטומטי לעברית בעזרת **Google Translate**
-- 📝 הוספת כתוביות ישירות לתוך הסרטון
-- ⚡ ביצועים מהירים במיוחד הודות לשימוש ב-Groq API
-- 🧩 תמיכה מלאה בכיוון טקסט **מימין לשמאל (RTL)** לעברית
+## Usage
+1. Start the bot: /start
+2. Send a video (max 10 min, 50MB)
+3. Wait for subtitled video
 
----
-
-## 🚀 איך להשתמש
+Powered by Groq ⚡
