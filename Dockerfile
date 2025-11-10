@@ -3,7 +3,8 @@ FROM python:3.11-slim
 # הגדרת משתני סביבה
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    IMAGEMAGICK_BINARY=/usr/bin/convert
+    IMAGEMAGICK_BINARY=/usr/bin/convert \
+    MAGICK_TEMPORARY_PATH=/tmp
 
 # התקנת חבילות מערכת
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -14,27 +15,37 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-dejavu-extra \
     fonts-liberation \
     fonts-liberation2 \
+    fonts-noto \
+    fonts-noto-core \
     libsm6 \
     libxext6 \
     libxrender-dev \
     libgomp1 \
     libglib2.0-0 \
+    wget \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# תיקון policy של ImageMagick - חשוב מאוד!
-# מאפשר לMoviePy לעבוד עם ImageMagick
-RUN if [ -f /etc/ImageMagick-6/policy.xml ]; then \
-        sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@*"/g' /etc/ImageMagick-6/policy.xml && \
-        sed -i 's/<policy domain="coder" rights="none" pattern="PDF"/<policy domain="coder" rights="read|write" pattern="PDF"/g' /etc/ImageMagick-6/policy.xml && \
-        sed -i 's/<policy domain="coder" rights="none" pattern="LABEL"/<policy domain="coder" rights="read|write" pattern="LABEL"/g' /etc/ImageMagick-6/policy.xml; \
+# תיקון CRITICAL של ImageMagick policy - הסרת כל המגבלות!
+RUN POLICY_FILE="/etc/ImageMagick-6/policy.xml" && \
+    if [ -f "$POLICY_FILE" ]; then \
+        cp "$POLICY_FILE" "$POLICY_FILE.bak" && \
+        sed -i '/<policy domain="path" rights="none"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="PDF"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="LABEL"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="PS"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="EPS"/d' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="memory" value=".*"/<policy domain="resource" name="memory" value="2GiB"/g' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="map" value=".*"/<policy domain="resource" name="map" value="2GiB"/g' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="disk" value=".*"/<policy domain="resource" name="disk" value="4GiB"/g' "$POLICY_FILE"; \
     fi
 
 # יצירת תיקיית עבודה
 WORKDIR /app
 
-# יצירת תיקיית temp עם הרשאות מלאות (חשוב ל-MoviePy)
-RUN mkdir -p /tmp/moviepy && chmod 777 /tmp/moviepy
+# יצירת תיקיות temp עם הרשאות מלאות
+RUN mkdir -p /tmp/moviepy /tmp/magick && \
+    chmod -R 777 /tmp
 
 # העתקה והתקנת requirements
 COPY requirements.txt .
@@ -44,16 +55,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # העתקת קבצי האפליקציה
 COPY app.py .
 
-# יצירת משתמש לא-root (אבטחה)
-RUN useradd -m -u 1000 botuser && \
-    chown -R botuser:botuser /app /tmp/moviepy
-
-# החלפה למשתמש לא-root
-USER botuser
+# הרשאות לתיקייה
+RUN chmod -R 755 /app
 
 # בריאות check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:10000/health', timeout=5)" || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:10000/health || exit 1
 
 # יציאת Flask
 EXPOSE 10000
