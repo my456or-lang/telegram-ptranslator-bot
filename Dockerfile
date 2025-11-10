@@ -1,61 +1,69 @@
-# ------------------------------
-# בסיס – Python 3.10 קל ומהיר
-# ------------------------------
-FROM python:3.10-slim
+FROM python:3.11-slim
 
-# ------------------------------
-# הגדרות סביבתיות
-# ------------------------------
+# הגדרת משתני סביבה
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    DEBIAN_FRONTEND=noninteractive
+    IMAGEMAGICK_BINARY=/usr/bin/convert \
+    MAGICK_TEMPORARY_PATH=/tmp
 
-# ------------------------------
-# עדכון מערכת והתקנת כלים נדרשים
-# ------------------------------
+# התקנת חבילות מערכת
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
+    imagemagick \
+    fonts-dejavu \
     fonts-dejavu-core \
+    fonts-dejavu-extra \
     fonts-liberation \
-    fonts-freefont-ttf \
+    fonts-liberation2 \
+    fonts-noto \
     fonts-noto-core \
-    fonts-noto-cjk \
-    fonts-noto-unhinted \
-    fonts-noto-color-emoji \
-    fonts-noto-extra \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libglib2.0-0 \
     wget \
-    curl \
-    unzip \
-    ttf-freefont \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# ------------------------------
-# התקנת פונט עברי איכותי (Assistant)
-# ------------------------------
-RUN mkdir -p /usr/share/fonts/truetype/assistant \
-    && wget -q https://github.com/google/fonts/raw/main/ofl/assistant/Assistant-Regular.ttf \
-       -O /usr/share/fonts/truetype/assistant/Assistant-Regular.ttf \
-    && fc-cache -fv
+# תיקון CRITICAL של ImageMagick policy - הסרת כל המגבלות!
+RUN POLICY_FILE="/etc/ImageMagick-6/policy.xml" && \
+    if [ -f "$POLICY_FILE" ]; then \
+        cp "$POLICY_FILE" "$POLICY_FILE.bak" && \
+        sed -i '/<policy domain="path" rights="none"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="PDF"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="LABEL"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="PS"/d' "$POLICY_FILE" && \
+        sed -i '/<policy domain="coder" rights="none" pattern="EPS"/d' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="memory" value=".*"/<policy domain="resource" name="memory" value="2GiB"/g' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="map" value=".*"/<policy domain="resource" name="map" value="2GiB"/g' "$POLICY_FILE" && \
+        sed -i 's/<policy domain="resource" name="disk" value=".*"/<policy domain="resource" name="disk" value="4GiB"/g' "$POLICY_FILE"; \
+    fi
 
-# ------------------------------
-# התקנת תלויות פייתון
-# ------------------------------
-COPY requirements.txt /app/requirements.txt
+# יצירת תיקיית עבודה
 WORKDIR /app
-RUN pip install --no-cache-dir -r requirements.txt
 
-# ------------------------------
+# יצירת תיקיות temp עם הרשאות מלאות
+RUN mkdir -p /tmp/moviepy /tmp/magick && \
+    chmod -R 777 /tmp
+
+# העתקה והתקנת requirements
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
 # העתקת קבצי האפליקציה
-# ------------------------------
-COPY . /app
+COPY app.py .
 
-# ------------------------------
-# פתיחת פורט Flask
-# ------------------------------
+# הרשאות לתיקייה
+RUN chmod -R 755 /app
+
+# בריאות check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:10000/health || exit 1
+
+# יציאת Flask
 EXPOSE 10000
 
-# ------------------------------
-# הפעלת האפליקציה
-# ------------------------------
-CMD ["python", "app.py"]
+# הרצת האפליקציה
+CMD ["python", "-u", "app.py"]
