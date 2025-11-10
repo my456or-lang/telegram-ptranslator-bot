@@ -3,16 +3,12 @@ import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
-from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip
+from moviepy.editor import VideoFileClip, CompositeVideoClip, TextClip
 import tempfile
 from flask import Flask
 from threading import Thread
 import requests
 import gc
-from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-from bidi.algorithm import get_display
-import arabic_reshaper
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,9 +30,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ואני אחזיר לך את הסרטון עם כתוביות בעברית! 🇮🇱\n\n"
         "📹 פשוט שלח סרטון ואני אתחיל...\n\n"
         "⚠️ מגבלות:\n"
-        "• סרטון עד 10 דקות\n"
-        "• גודל עד 50MB\n\n"
-        "⚡ מהיר פי 10 מהגרסה הקודמת!"
+        "• סרטון עד 5 דקות\n"
+        "• גודל עד 20MB\n\n"
+        "⚡ כתוביות ללא רקע!"
     )
 
 def transcribe_with_groq(audio_path):
@@ -68,204 +64,111 @@ def transcribe_with_groq(audio_path):
     
     return response.json()
 
-def prepare_hebrew_text(text):
-    """הכנת טקסט עברי לתצוגה נכונה - מימין לשמאל"""
+def reverse_hebrew_text(text):
+    """הפיכת טקסט עברי למימין לשמאל - פשוט והעובד!"""
+    # הפיכה פשוטה של כל המשפט
+    return text[::-1]
+
+def create_subtitle_clip(text, start, duration, video_size):
+    """יצירת כתובית עם TextClip - פשוט וללא רקע"""
+    
+    # הפיכת הטקסט לעברית נכונה
+    hebrew_text = reverse_hebrew_text(text)
+    
     try:
-        # קודם נעצב את האותיות
-        reshaped_text = arabic_reshaper.reshape(text)
-        # עכשיו נהפוך את הכיוון למימין לשמאל
-        bidi_text = get_display(reshaped_text)
-        return bidi_text
+        # יצירת כתובית עם TextClip
+        txt_clip = TextClip(
+            hebrew_text,
+            fontsize=50,
+            color='white',
+            font='DejaVu-Sans-Bold',
+            stroke_color='black',
+            stroke_width=3,
+            method='caption',
+            size=(video_size[0] - 100, None),
+            align='center'
+        )
+        
+        # הגדרת זמן ומיקום
+        txt_clip = txt_clip.set_start(start)
+        txt_clip = txt_clip.set_duration(duration)
+        txt_clip = txt_clip.set_position(('center', video_size[1] - txt_clip.h - 30))
+        
+        return txt_clip
+        
     except Exception as e:
-        logger.warning(f"Failed to prepare Hebrew text with reshaping: {e}")
-        try:
-            # ננסה רק עם BiDi
-            bidi_text = get_display(text)
-            return bidi_text
-        except Exception as e2:
-            logger.warning(f"Failed BiDi, reversing text: {e2}")
-            # אם הכל נכשל, נהפוך את הטקסט ידנית
-            return text[::-1]
-
-def get_font(size=40):
-    """מציאת פונט עברי מתאים"""
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
-    ]
-    
-    for font_path in font_paths:
-        try:
-            if os.path.exists(font_path):
-                logger.info(f"✅ Using font: {font_path}")
-                return ImageFont.truetype(font_path, size)
-        except Exception as e:
-            logger.debug(f"❌ Could not load font {font_path}: {e}")
-            continue
-    
-    logger.warning("⚠️ לא נמצא פונט TTF, משתמש בפונט ברירת מחדל")
-    try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
-    except:
-        return ImageFont.load_default()
-
-def wrap_text(text, font, max_width, draw):
-    """חלוקת טקסט לשורות לפי רוחב מקסימלי"""
-    words = text.split()
-    lines = []
-    current_line = []
-    
-    for word in words:
-        test_line = ' '.join(current_line + [word])
-        try:
-            bbox = draw.textbbox((0, 0), test_line, font=font)
-            width = bbox[2] - bbox[0]
-        except:
-            width = draw.textsize(test_line, font=font)[0]
-        
-        if width <= max_width:
-            current_line.append(word)
-        else:
-            if current_line:
-                lines.append(' '.join(current_line))
-            current_line = [word]
-    
-    if current_line:
-        lines.append(' '.join(current_line))
-    
-    return lines
-
-def make_text_image_no_bg(text, width, height):
-    """יצירת תמונה עם טקסט עברי ללא רקע - רק מתאר שחור חזק"""
-    # יצירת תמונה שקופה
-    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    
-    # עיבוד טקסט עברי - מימין לשמאל
-    hebrew_text = prepare_hebrew_text(text)
-    font = get_font(size=45)  # פונט גדול יותר
-    
-    max_text_width = int(width * 0.9)
-    lines = wrap_text(hebrew_text, font, max_text_width, draw)
-    
-    line_height = 55
-    total_height = len(lines) * line_height
-    y_start = height - total_height - 15
-    
-    for i, line in enumerate(lines):
-        try:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            text_width = bbox[2] - bbox[0]
-            text_height = bbox[3] - bbox[1]
-        except:
-            text_width, text_height = draw.textsize(line, font=font)
-        
-        x = (width - text_width) // 2
-        y = y_start + (i * line_height)
-        
-        # מתאר שחור עבה מאוד (4 פיקסלים)
-        outline_range = 4
-        for adj_x in range(-outline_range, outline_range + 1):
-            for adj_y in range(-outline_range, outline_range + 1):
-                if adj_x != 0 or adj_y != 0:
-                    draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
-        
-        # הטקסט הלבן עצמו
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-    
-    # המרה ל-RGB
-    rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
-    r, g, b, a = img.split()
-    rgb_img.paste(img, (0, 0), a)
-    
-    return np.array(rgb_img)
-
-def create_hebrew_subtitle_clip(text, start, duration, video_size):
-    """יצירת קליפ כתובית עברית ללא רקע"""
-    width, height = video_size
-    subtitle_height = 100  # גובה קטן - רק לטקסט
-    
-    def make_frame(t):
-        return make_text_image_no_bg(text, width, subtitle_height)
-    
-    clip = VideoClip(make_frame, duration=duration)
-    clip = clip.set_start(start)
-    clip = clip.set_position(('center', height - subtitle_height - 10))
-    
-    return clip
+        logger.error(f"Error creating TextClip: {e}")
+        return None
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_path = None
     audio_path = None
     output_path = None
     video = None
+    final_video = None
     
     try:
-        if update.message.video.file_size > 50 * 1024 * 1024:
-            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 50MB")
+        # בדיקת גודל
+        if update.message.video.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 20MB")
             return
         
         status_msg = await update.message.reply_text("⏳ מעבד את הסרטון...")
         
+        # הורדת הסרטון
         video_file = await update.message.video.get_file()
         
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
             await video_file.download_to_drive(temp_video.name)
             video_path = temp_video.name
         
-        logger.info(f"Video downloaded: {video_path}")
+        logger.info(f"✅ Video downloaded: {video_path}")
         
+        # פתיחת הסרטון
         await status_msg.edit_text("🎤 מחלץ אודיו...")
-        
         video = VideoFileClip(video_path)
         
-        if video.duration > 600:
-            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 10 דקות")
+        # בדיקת אורך
+        if video.duration > 300:  # 5 דקות
+            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 5 דקות")
             video.close()
-            os.remove(video_path)
             return
         
-        # בדיקה שיש אודיו
+        # בדיקת אודיו
         if video.audio is None:
             await update.message.reply_text("❌ הסרטון לא מכיל אודיו!")
             video.close()
-            os.remove(video_path)
             return
         
+        # חילוץ אודיו
         audio_path = video_path.replace('.mp4', '.mp3')
         video.audio.write_audiofile(audio_path, verbose=False, logger=None)
         
         video_size = video.size
-        logger.info(f"Video size: {video_size}")
+        logger.info(f"📐 Video size: {video_size}")
         
+        # שחרור הסרטון זמנית
         video.close()
         video = None
         gc.collect()
         
-        await status_msg.edit_text("🗣️ מתמלל דיבור עם Groq...")
-        
+        # תמלול עם Groq
+        await status_msg.edit_text("🗣️ מתמלל דיבור...")
         result = transcribe_with_groq(audio_path)
         segments = result.get('segments', [])
         
-        logger.info(f"Found {len(segments)} segments")
+        logger.info(f"📝 Found {len(segments)} segments")
         
         if not segments:
             await update.message.reply_text("❌ לא נמצא דיבור באודיו")
             return
         
-        gc.collect()
-        
+        # תרגום
         await status_msg.edit_text("🌍 מתרגם לעברית...")
+        translator = GoogleTranslator(source='en', target='he')
         
-        translator = GoogleTranslator(source='en', target='iw')
         subtitles = []
-        
-        for seg in segments:
+        for i, seg in enumerate(segments):
             text = seg.get('text', '').strip()
             if text and len(text) > 2:
                 try:
@@ -275,45 +178,61 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'end': seg['end'],
                         'text': translated
                     })
-                    logger.info(f"Translated: {text[:30]} -> {translated[:30]}")
+                    logger.info(f"✅ {i+1}/{len(segments)}: {text[:20]}... → {translated[:20]}...")
                 except Exception as e:
-                    logger.error(f"Translation error: {e}")
+                    logger.error(f"❌ Translation error: {e}")
                     continue
         
         if not subtitles:
             await update.message.reply_text("❌ לא נמצא טקסט לתרגום")
             return
         
-        logger.info(f"Created {len(subtitles)} subtitles")
+        logger.info(f"✅ Created {len(subtitles)} Hebrew subtitles")
         
-        await status_msg.edit_text("🎨 מוסיף כתוביות לסרטון...")
+        # הוספת כתוביות
+        await status_msg.edit_text(f"🎨 מוסיף {len(subtitles)} כתוביות...")
         
+        # פתיחת הסרטון שוב
         video = VideoFileClip(video_path)
         
+        # יצירת כתוביות
         txt_clips = []
         for i, sub in enumerate(subtitles):
             try:
-                clip = create_hebrew_subtitle_clip(
+                clip = create_subtitle_clip(
                     sub['text'],
                     sub['start'],
                     sub['end'] - sub['start'],
                     video_size
                 )
-                txt_clips.append(clip)
-                logger.info(f"Created subtitle clip {i+1}/{len(subtitles)}")
+                if clip:
+                    txt_clips.append(clip)
+                    logger.info(f"✅ Subtitle {i+1}/{len(subtitles)}")
+                    
+                    # עדכון כל 5 כתוביות
+                    if (i + 1) % 5 == 0:
+                        try:
+                            await status_msg.edit_text(f"🎨 מוסיף כתוביות... ({i+1}/{len(subtitles)})")
+                        except:
+                            pass
             except Exception as e:
-                logger.error(f"Failed to create subtitle clip {i}: {e}")
+                logger.error(f"❌ Failed subtitle {i}: {e}")
                 continue
         
         if not txt_clips:
             await update.message.reply_text("❌ נכשל ביצירת כתוביות")
+            video.close()
             return
         
-        logger.info(f"Compositing video with {len(txt_clips)} subtitle clips")
+        logger.info(f"✅ Created {len(txt_clips)} subtitle clips")
+        
+        # שילוב הסרטון עם הכתוביות
+        await status_msg.edit_text("🎬 מרכיב את הסרטון הסופי...")
         
         final_video = CompositeVideoClip([video] + txt_clips)
-        output_path = video_path.replace('.mp4', '_subtitled.mp4')
+        output_path = video_path.replace('.mp4', '_sub.mp4')
         
+        # כתיבת הסרטון
         final_video.write_videofile(
             output_path,
             codec='libx264',
@@ -321,51 +240,68 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             preset='ultrafast',
             threads=2,
             verbose=False,
-            logger=None
+            logger=None,
+            temp_audiofile=video_path.replace('.mp4', '_temp_audio.m4a')
         )
         
-        logger.info("Video compositing complete")
+        logger.info("✅ Video complete!")
         
-        final_video.close()
-        video.close()
-        gc.collect()
+        # שליחת הסרטון
+        await status_msg.edit_text("📤 שולח...")
         
-        await status_msg.edit_text("📤 שולח את הסרטון...")
+        file_size = os.path.getsize(output_path)
+        logger.info(f"📦 Output file size: {file_size / 1024 / 1024:.2f}MB")
         
-        with open(output_path, 'rb') as video_file_to_send:
+        with open(output_path, 'rb') as f:
             await update.message.reply_video(
-                video=video_file_to_send,
-                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!\n⚡ Powered by Groq",
-                read_timeout=60,
-                write_timeout=60
+                video=f,
+                caption="✅ סרטון עם כתוביות בעברית!\n⚡ Powered by Groq",
+                read_timeout=120,
+                write_timeout=120,
+                connect_timeout=60
             )
         
         await status_msg.delete()
-        logger.info("Video sent successfully!")
+        logger.info("✅ SUCCESS!")
         
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
+        logger.error(f"❌ ERROR: {e}", exc_info=True)
         try:
-            await update.message.reply_text(f"❌ שגיאה: {str(e)}")
+            await update.message.reply_text(f"❌ שגיאה: {str(e)[:200]}")
+        except:
+            pass
+    
+    finally:
+        # ניקוי
+        logger.info("🧹 Cleaning up...")
+        
+        try:
+            if final_video:
+                final_video.close()
         except:
             pass
         
-    finally:
         try:
             if video:
                 video.close()
         except:
             pass
         
-        for file_path in [video_path, audio_path, output_path]:
+        # מחיקת כל הקבצים הזמניים
+        temp_files = [video_path, audio_path, output_path]
+        if video_path:
+            temp_files.append(video_path.replace('.mp4', '_temp_audio.m4a'))
+        
+        for file_path in temp_files:
             try:
                 if file_path and os.path.exists(file_path):
                     os.remove(file_path)
-                    logger.info(f"Cleaned up: {file_path}")
+                    logger.info(f"🗑️ Deleted: {file_path}")
             except Exception as e:
                 logger.error(f"Failed to delete {file_path}: {e}")
         
         gc.collect()
+        logger.info("✅ Cleanup complete")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Exception: {context.error}", exc_info=context.error)
@@ -388,15 +324,19 @@ def run_bot():
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     application.add_error_handler(error_handler)
     
-    logger.info("🤖 הבוט מתחיל לרוץ עם Groq...")
+    logger.info("🤖 Bot starting with Groq...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        pool_timeout=60,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=60
     )
 
 def run_flask():
     port = int(os.environ.get('PORT', 10000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, threaded=True)
 
 if __name__ == '__main__':
     flask_thread = Thread(target=run_flask, daemon=True)
