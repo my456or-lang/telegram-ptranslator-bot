@@ -259,9 +259,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(output_path, 'rb') as video_file_to_send:
             await update.message.reply_video(
                 video=video_file_to_send,
-                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!
+                caption="""✅ הנה הסרטון שלך עם כתוביות בעברית!
 ⚡ Powered by Groq
-🔧 v2.1 - תיקון RTL משופר",
+🔧 v2.1 - תיקון RTL משופר""",
                 read_timeout=60,
                 write_timeout=60
             )
