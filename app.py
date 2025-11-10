@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 from bidi.algorithm import get_display
 import arabic_reshaper
+import unicodedata
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -71,22 +72,33 @@ def transcribe_with_groq(audio_path):
 def prepare_hebrew_text(text):
     """
     הכנת טקסט עברי לתצוגה נכונה
-    🔥 תיקון קריטי: base_dir='R' מאלץ כיוון RTL!
+    🔥 תיקון רדיקלי: הוספת RLM (Right-to-Left Mark) לכל תו עברי!
     """
     try:
+        # שלב 1: עיצוב אותיות עבריות
         reshaped_text = arabic_reshaper.reshape(text)
-        # ✅ הוספת base_dir='R' - זה מאלץ כיוון מימין לשמאל!
+        
+        # שלב 2: אלגוריתם דו-כיווני
         bidi_text = get_display(reshaped_text, base_dir='R')
         
-        logger.info(f"✅ RTL: {text[:20]} → {bidi_text[:20]}")
-        return bidi_text
+        # שלב 3: 🔥 הוספת RLM אחרי כל תו עברי - זה מאלץ RTL!
+        RLM = '\u200F'  # Right-to-Left Mark (invisible)
+        result = ''
+        for char in bidi_text:
+            result += char
+            # אם זה תו עברי - הוסף RLM
+            if '\u0590' <= char <= '\u05FF':  # טווח Unicode של עברית
+                result += RLM
+        
+        logger.info(f"✅ RTL (with RLM): {text[:20]} → {result[:20]}")
+        return result
+        
     except Exception as e:
-        logger.warning(f"Failed to prepare Hebrew text: {e}")
-        # fallback - ניסיון עם base_dir='R' ישירות
-        try:
-            return get_display(text, base_dir='R')
-        except:
-            return text[::-1]  # היפוך ידני כפתרון אחרון
+        logger.error(f"❌ RTL Failed: {e}")
+        # fallback: היפוך ידני עם RLM
+        RLM = '\u200F'
+        reversed_text = text[::-1]
+        return RLM + reversed_text + RLM
 
 def get_font(size=40):
     """מציאת פונט עברי מתאים"""
