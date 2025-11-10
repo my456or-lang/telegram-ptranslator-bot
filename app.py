@@ -71,11 +71,11 @@ def transcribe_with_groq(audio_path):
 def prepare_hebrew_text(text):
     """
     הכנת טקסט עברי לתצוגה נכונה
-    🔥 תיקון קריטי: base_level='R' מאלץ כיוון RTL!
+    🔥 תיקון קריטי: base_dir='R' מאלץ כיוון RTL!
     """
     try:
         reshaped_text = arabic_reshaper.reshape(text)
-        # ✅ הוספת base_level='R' - זה מאלץ כיוון מימין לשמאל!
+        # ✅ הוספת base_dir='R' - זה מאלץ כיוון מימין לשמאל!
         bidi_text = get_display(reshaped_text, base_dir='R')
         
         logger.info(f"✅ RTL: {text[:20]} → {bidi_text[:20]}")
@@ -117,9 +117,8 @@ def get_font(size=40):
 
 def wrap_text(text, font, max_width, draw):
     """
-    חלוקת טקסט לשורות - תיקון הבעיה שגילינו!
-    ✅ כשיש שורה אחת - צריך עיבוד
-    ✅ כשיש 2+ שורות - עובד טוב
+    חלוקת טקסט לשורות - תיקון עם base_dir='R'
+    ✅ כל שורה מעובדת בנפרד עם כיוון RTL מאולץ
     """
     # ✅ עיבוד ראשוני של כל הטקסט
     hebrew_text = prepare_hebrew_text(text)
@@ -133,6 +132,7 @@ def wrap_text(text, font, max_width, draw):
     
     # ✅ אם זה שורה אחת - החזר ישירות עם עיבוד!
     if text_width <= max_width:
+        logger.info(f"Single line: {hebrew_text[:30]}")
         return [hebrew_text]
     
     # חלוקה למילים
@@ -154,17 +154,21 @@ def wrap_text(text, font, max_width, draw):
             if current_line:
                 # ✅ עיבוד נוסף של כל שורה בנפרד!
                 line_text = ' '.join(current_line)
-                lines.append(prepare_hebrew_text(line_text))
+                processed_line = prepare_hebrew_text(line_text)
+                lines.append(processed_line)
+                logger.info(f"Multi-line: {processed_line[:30]}")
             current_line = [word]
     
     if current_line:
         line_text = ' '.join(current_line)
-        lines.append(prepare_hebrew_text(line_text))
+        processed_line = prepare_hebrew_text(line_text)
+        lines.append(processed_line)
+        logger.info(f"Last line: {processed_line[:30]}")
     
     return lines
 
 def make_text_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי - מחזירה RGB + יישור מימין"""
+    """יצירת תמונה עם טקסט עברי - RTL עם יישור מימין"""
     # יצירת תמונה שקופה זמנית
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
@@ -354,7 +358,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(output_path, 'rb') as video_file_to_send:
             await update.message.reply_video(
                 video=video_file_to_send,
-                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!\n⚡ Powered by Groq",
+                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!\n⚡ Powered by Groq\n🔧 v2.1 - תיקון RTL משופר",
                 read_timeout=60,
                 write_timeout=60
             )
