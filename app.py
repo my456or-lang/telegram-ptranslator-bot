@@ -107,13 +107,23 @@ def get_font(size=40):
 
 def wrap_text(text, font, max_width, draw):
     """
-    חלוקת טקסט לשורות לפי רוחב מקסימלי - תיקון RTL
-    ✅ עיבוד העברית קורה לפני החלוקה לשורות!
+    חלוקת טקסט לשורות לפי רוחב מקסימלי - תיקון RTL מתקדם
+    ✅ עיבוד כפול: reshape + bidi על כל הטקסט ועל כל שורה!
     """
-    # ✅ קודם כל - עיבוד עברי מלא של כל הטקסט
+    # ✅ עיבוד ראשוני של כל הטקסט
     hebrew_text = prepare_hebrew_text(text)
     
-    # עכשיו חלוקה לשורות על הטקסט המעובד
+    # בדיקה אם הטקסט קצר מספיק לשורה אחת
+    try:
+        bbox = draw.textbbox((0, 0), hebrew_text, font=font)
+        text_width = bbox[2] - bbox[0]
+    except:
+        text_width = draw.textsize(hebrew_text, font=font)[0]
+    
+    if text_width <= max_width:
+        return [hebrew_text]
+    
+    # חלוקה למילים
     words = hebrew_text.split()
     lines = []
     current_line = []
@@ -130,25 +140,27 @@ def wrap_text(text, font, max_width, draw):
             current_line.append(word)
         else:
             if current_line:
-                lines.append(' '.join(current_line))
+                # ✅ עיבוד נוסף של כל שורה בנפרד!
+                line_text = ' '.join(current_line)
+                lines.append(prepare_hebrew_text(line_text))
             current_line = [word]
     
     if current_line:
-        lines.append(' '.join(current_line))
+        line_text = ' '.join(current_line)
+        lines.append(prepare_hebrew_text(line_text))
     
     return lines
 
 def make_text_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי - מחזירה RGB במקום RGBA"""
+    """יצירת תמונה עם טקסט עברי - מחזירה RGB + יישור מימין"""
     # יצירת תמונה שקופה זמנית
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # ✅ לא צריך prepare_hebrew_text כאן - זה כבר קרה ב-wrap_text
     font = get_font(size=36)
     
     max_text_width = int(width * 0.9)
-    lines = wrap_text(text, font, max_text_width, draw)  # מעביר טקסט גולמי
+    lines = wrap_text(text, font, max_text_width, draw)
     
     line_height = 45
     total_height = len(lines) * line_height
@@ -162,7 +174,8 @@ def make_text_image(text, width, height):
         except:
             text_width, text_height = draw.textsize(line, font=font)
         
-        x = (width - text_width) // 2
+        # ✅ יישור מימין במקום ממרכז!
+        x = width - text_width - 50  # 50 פיקסלים מהשוליים הימניים
         y = y_start + (i * line_height)
         
         padding = 12
