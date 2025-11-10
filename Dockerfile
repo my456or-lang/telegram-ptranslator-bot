@@ -1,8 +1,9 @@
 FROM python:3.11-slim
 
-# התקנת חבילות מערכת
+# התקנת חבילות מערכת כולל ImageMagick
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    imagemagick \
     fonts-dejavu \
     fonts-dejavu-core \
     fonts-liberation \
@@ -13,6 +14,9 @@ RUN apt-get update && apt-get install -y \
     libgomp1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
+
+# תיקון policy של ImageMagick (חשוב!)
+RUN sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@*"/' /etc/ImageMagick-6/policy.xml || true
 
 # יצירת תיקיית עבודה
 WORKDIR /app
