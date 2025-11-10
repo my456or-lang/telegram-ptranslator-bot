@@ -69,14 +69,23 @@ def transcribe_with_groq(audio_path):
     return response.json()
 
 def prepare_hebrew_text(text):
-    """הכנת טקסט עברי לתצוגה נכונה"""
+    """הכנת טקסט עברי לתצוגה נכונה - מימין לשמאל"""
     try:
+        # קודם נעצב את האותיות
         reshaped_text = arabic_reshaper.reshape(text)
+        # עכשיו נהפוך את הכיוון למימין לשמאל
         bidi_text = get_display(reshaped_text)
         return bidi_text
     except Exception as e:
-        logger.warning(f"Failed to prepare Hebrew text: {e}")
-        return text
+        logger.warning(f"Failed to prepare Hebrew text with reshaping: {e}")
+        try:
+            # ננסה רק עם BiDi
+            bidi_text = get_display(text)
+            return bidi_text
+        except Exception as e2:
+            logger.warning(f"Failed BiDi, reversing text: {e2}")
+            # אם הכל נכשל, נהפוך את הטקסט ידנית
+            return text[::-1]
 
 def get_font(size=40):
     """מציאת פונט עברי מתאים"""
@@ -131,21 +140,22 @@ def wrap_text(text, font, max_width, draw):
     
     return lines
 
-def make_text_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי - מחזירה RGB במקום RGBA"""
-    # יצירת תמונה שקופה זמנית
+def make_text_image_no_bg(text, width, height):
+    """יצירת תמונה עם טקסט עברי ללא רקע - רק מתאר שחור חזק"""
+    # יצירת תמונה שקופה
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
+    # עיבוד טקסט עברי - מימין לשמאל
     hebrew_text = prepare_hebrew_text(text)
-    font = get_font(size=36)
+    font = get_font(size=45)  # פונט גדול יותר
     
     max_text_width = int(width * 0.9)
     lines = wrap_text(hebrew_text, font, max_text_width, draw)
     
-    line_height = 45
+    line_height = 55
     total_height = len(lines) * line_height
-    y_start = (height - total_height) // 2
+    y_start = height - total_height - 15
     
     for i, line in enumerate(lines):
         try:
@@ -158,31 +168,34 @@ def make_text_image(text, width, height):
         x = (width - text_width) // 2
         y = y_start + (i * line_height)
         
-        padding = 12
-        draw.rectangle(
-            [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
-            fill=(0, 0, 0, 200)
-        )
+        # מתאר שחור עבה מאוד (4 פיקסלים)
+        outline_range = 4
+        for adj_x in range(-outline_range, outline_range + 1):
+            for adj_y in range(-outline_range, outline_range + 1):
+                if adj_x != 0 or adj_y != 0:
+                    draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
         
+        # הטקסט הלבן עצמו
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
     
-    # המרה ל-RGB (3 ערוצים) על רקע שחור
+    # המרה ל-RGB
     rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
-    rgb_img.paste(img, (0, 0), img)  # משתמש ב-alpha channel כמסכה
+    r, g, b, a = img.split()
+    rgb_img.paste(img, (0, 0), a)
     
     return np.array(rgb_img)
 
 def create_hebrew_subtitle_clip(text, start, duration, video_size):
-    """יצירת קליפ כתובית עברית"""
+    """יצירת קליפ כתובית עברית ללא רקע"""
     width, height = video_size
-    subtitle_height = 150
+    subtitle_height = 100  # גובה קטן - רק לטקסט
     
     def make_frame(t):
-        return make_text_image(text, width, subtitle_height)
+        return make_text_image_no_bg(text, width, subtitle_height)
     
     clip = VideoClip(make_frame, duration=duration)
     clip = clip.set_start(start)
-    clip = clip.set_position(('center', height - subtitle_height - 20))
+    clip = clip.set_position(('center', height - subtitle_height - 10))
     
     return clip
 
