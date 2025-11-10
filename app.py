@@ -62,15 +62,19 @@ def transcribe_with_groq(audio_path):
         raise Exception(f"Groq API Error: {response.text}")
     return response.json()
 
+def mirror_text(text):
+    """היפוך ידני של טקסט עברי"""
+    return text[::-1]
+
 def prepare_hebrew_text(text):
     try:
-        reshaped_text = arabic_reshaper.reshape(text)
-        bidi_text = get_display(reshaped_text, base_dir='R')
-        return '‫' + bidi_text + '‬'
+        # היפוך ידני
+        mirrored = mirror_text(text)
+        # עטיפה ב־RTL
+        return '‫' + mirrored + '‬'
     except Exception as e:
         logger.error(f"❌ RTL Failed: {e}")
-        reversed_text = text[::-1]
-        return '‫' + reversed_text + '‬'
+        return '‫' + mirror_text(text) + '‬'
 
 def get_font(size=40):
     font_paths = [
