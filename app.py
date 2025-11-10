@@ -9,6 +9,8 @@ from flask import Flask
 from threading import Thread
 import requests
 import gc
+from arabic_reshaper import reshape
+from bidi.algorithm import get_display
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -32,11 +34,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ מגבלות:\n"
         "• סרטון עד 5 דקות\n"
         "• גודל עד 20MB\n\n"
-        "⚡ כתוביות ללא רקע!"
+        "⚡ כתוביות עם רקע קריא!"
     )
 
-def transcribe_with_groq(audio_path):
-    """תמלול אודיו באמצעות Groq API"""
+def transcribe_with_groq(audio_path, max_retries=3):
+    """תמלול אודיו באמצעות Groq API עם retry"""
     GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
     
     if not GROQ_API_KEY:
@@ -48,57 +50,100 @@ def transcribe_with_groq(audio_path):
         "Authorization": f"Bearer {GROQ_API_KEY}"
     }
     
-    with open(audio_path, 'rb') as audio_file:
-        files = {
-            'file': audio_file,
-            'model': (None, 'whisper-large-v3'),
-            'language': (None, 'en'),
-            'response_format': (None, 'verbose_json'),
-            'timestamp_granularities[]': (None, 'segment')
-        }
-        
-        response = requests.post(url, headers=headers, files=files, timeout=300)
+    for attempt in range(max_retries):
+        try:
+            with open(audio_path, 'rb') as audio_file:
+                files = {
+                    'file': audio_file,
+                    'model': (None, 'whisper-large-v3'),
+                    'language': (None, 'en'),
+                    'response_format': (None, 'verbose_json'),
+                    'timestamp_granularities[]': (None, 'segment')
+                }
+                
+                response = requests.post(url, headers=headers, files=files, timeout=300)
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 429:  # Rate limit
+                if attempt < max_retries - 1:
+                    logger.warning(f"Rate limited, retry {attempt + 1}/{max_retries}")
+                    import time
+                    time.sleep(5)
+                    continue
+            
+            raise Exception(f"Groq API Error {response.status_code}: {response.text}")
+            
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                logger.warning(f"Timeout, retry {attempt + 1}/{max_retries}")
+                continue
+            raise Exception("Groq API timeout after retries")
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"Error, retry {attempt + 1}/{max_retries}: {e}")
+                continue
+            raise
     
-    if response.status_code != 200:
-        raise Exception(f"Groq API Error: {response.text}")
-    
-    return response.json()
+    raise Exception("Failed after all retries")
 
-def reverse_hebrew_text(text):
-    """הפיכת טקסט עברי למימין לשמאל - פשוט והעובד!"""
-    # הפיכה פשוטה של כל המשפט
-    return text[::-1]
+def fix_hebrew_text(text):
+    """
+    תיקון טקסט עברי למימין לשמאל - הדרך הנכונה!
+    משתמש ב-arabic_reshaper וב-bidi כדי לטפל נכון בעברית
+    """
+    try:
+        # קודם נעצב מחדש את התווים (חשוב לעברית ולערבית)
+        reshaped_text = reshape(text)
+        # אחר כך נחיל את האלגוריתם הדו-כיווני
+        bidi_text = get_display(reshaped_text)
+        return bidi_text
+    except Exception as e:
+        logger.error(f"Error fixing Hebrew text: {e}")
+        # fallback - לפחות נחזיר את הטקסט המקורי
+        return text
 
 def create_subtitle_clip(text, start, duration, video_size):
-    """יצירת כתובית עם TextClip - פשוט וללא רקע"""
+    """יצירת כתובית עם TextClip - עם רקע קריא"""
     
-    # הפיכת הטקסט לעברית נכונה
-    hebrew_text = reverse_hebrew_text(text)
+    # תיקון הטקסט העברי
+    hebrew_text = fix_hebrew_text(text)
     
     try:
         # יצירת כתובית עם TextClip
         txt_clip = TextClip(
             hebrew_text,
-            fontsize=50,
+            fontsize=48,
             color='white',
-            font='DejaVu-Sans-Bold',
+            font='DejaVu-Sans-Bold',  # פונט שתומך בעברית
             stroke_color='black',
-            stroke_width=3,
+            stroke_width=2.5,
             method='caption',
-            size=(video_size[0] - 100, None),
+            size=(video_size[0] - 120, None),
             align='center'
         )
         
-        # הגדרת זמן ומיקום
-        txt_clip = txt_clip.set_start(start)
-        txt_clip = txt_clip.set_duration(duration)
-        txt_clip = txt_clip.set_position(('center', video_size[1] - txt_clip.h - 30))
+        # הוספת רקע שחור חצי שקוף לקריאות טובה יותר
+        from moviepy.video.VideoClip import ColorClip
+        bg_clip = ColorClip(
+            size=(txt_clip.w + 40, txt_clip.h + 20),
+            color=(0, 0, 0)
+        ).set_opacity(0.7)
         
-        return txt_clip
+        # מיקום הרקע והטקסט
+        bg_clip = bg_clip.set_start(start).set_duration(duration)
+        txt_clip = txt_clip.set_start(start).set_duration(duration)
+        
+        # מיקום בתחתית המסך
+        y_position = video_size[1] - txt_clip.h - 50
+        bg_clip = bg_clip.set_position(('center', y_position - 10))
+        txt_clip = txt_clip.set_position(('center', y_position))
+        
+        return [bg_clip, txt_clip]
         
     except Exception as e:
         logger.error(f"Error creating TextClip: {e}")
-        return None
+        return []
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video_path = None
@@ -147,15 +192,19 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video_size = video.size
         logger.info(f"📐 Video size: {video_size}")
         
-        # שחרור הסרטון זמנית
+        # שחרור הסרטון זמנית לחיסכון בזיכרון
         video.close()
         video = None
         gc.collect()
         
         # תמלול עם Groq
         await status_msg.edit_text("🗣️ מתמלל דיבור...")
-        result = transcribe_with_groq(audio_path)
-        segments = result.get('segments', [])
+        try:
+            result = transcribe_with_groq(audio_path)
+            segments = result.get('segments', [])
+        except Exception as e:
+            await update.message.reply_text(f"❌ שגיאה בתמלול: {str(e)[:100]}")
+            return
         
         logger.info(f"📝 Found {len(segments)} segments")
         
@@ -165,7 +214,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # תרגום
         await status_msg.edit_text("🌍 מתרגם לעברית...")
-        translator = GoogleTranslator(source='en', target='iw')  # 'iw' זה עברית בגוגל
+        translator = GoogleTranslator(source='en', target='he')
         
         subtitles = []
         for i, seg in enumerate(segments):
@@ -178,9 +227,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'end': seg['end'],
                         'text': translated
                     })
-                    logger.info(f"✅ {i+1}/{len(segments)}: {text[:20]}... → {translated[:20]}...")
+                    logger.info(f"✅ {i+1}/{len(segments)}: {text[:30]}... → {translated[:30]}...")
                 except Exception as e:
-                    logger.error(f"❌ Translation error: {e}")
+                    logger.error(f"❌ Translation error for segment {i}: {e}")
                     continue
         
         if not subtitles:
@@ -196,17 +245,18 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         video = VideoFileClip(video_path)
         
         # יצירת כתוביות
-        txt_clips = []
+        all_clips = [video]
+        
         for i, sub in enumerate(subtitles):
             try:
-                clip = create_subtitle_clip(
+                clips = create_subtitle_clip(
                     sub['text'],
                     sub['start'],
                     sub['end'] - sub['start'],
                     video_size
                 )
-                if clip:
-                    txt_clips.append(clip)
+                if clips:
+                    all_clips.extend(clips)
                     logger.info(f"✅ Subtitle {i+1}/{len(subtitles)}")
                     
                     # עדכון כל 5 כתוביות
@@ -219,17 +269,17 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"❌ Failed subtitle {i}: {e}")
                 continue
         
-        if not txt_clips:
+        if len(all_clips) <= 1:
             await update.message.reply_text("❌ נכשל ביצירת כתוביות")
             video.close()
             return
         
-        logger.info(f"✅ Created {len(txt_clips)} subtitle clips")
+        logger.info(f"✅ Created {len(all_clips)-1} subtitle clips")
         
         # שילוב הסרטון עם הכתוביות
         await status_msg.edit_text("🎬 מרכיב את הסרטון הסופי...")
         
-        final_video = CompositeVideoClip([video] + txt_clips)
+        final_video = CompositeVideoClip(all_clips)
         output_path = video_path.replace('.mp4', '_sub.mp4')
         
         # כתיבת הסרטון
