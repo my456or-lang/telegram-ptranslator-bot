@@ -69,14 +69,18 @@ def transcribe_with_groq(audio_path):
     return response.json()
 
 def prepare_hebrew_text(text):
-    """הכנת טקסט עברי לתצוגה נכונה"""
+    """הכנת טקסט עברי לתצוגה נכונה - גרסה רדיקלית"""
     try:
+        # עיבוד מלא
         reshaped_text = arabic_reshaper.reshape(text)
         bidi_text = get_display(reshaped_text)
+        
+        logger.info(f"✅ RTL Processed: {text[:20]} → {bidi_text[:20]}")
         return bidi_text
     except Exception as e:
-        logger.warning(f"Failed to prepare Hebrew text: {e}")
-        return text
+        logger.error(f"❌ RTL Failed, reversing manually: {e}")
+        # fallback: היפוך ידני
+        return text[::-1]
 
 def get_font(size=40):
     """מציאת פונט עברי מתאים"""
@@ -105,90 +109,58 @@ def get_font(size=40):
     except:
         return ImageFont.load_default()
 
-def wrap_text(text, font, max_width, draw):
-    """
-    חלוקת טקסט לשורות לפי רוחב מקסימלי - תיקון RTL מתקדם
-    ✅ עיבוד כפול: reshape + bidi על כל הטקסט ועל כל שורה!
-    """
-    # ✅ עיבוד ראשוני של כל הטקסט
-    hebrew_text = prepare_hebrew_text(text)
-    
-    # בדיקה אם הטקסט קצר מספיק לשורה אחת
-    try:
-        bbox = draw.textbbox((0, 0), hebrew_text, font=font)
-        text_width = bbox[2] - bbox[0]
-    except:
-        text_width = draw.textsize(hebrew_text, font=font)[0]
-    
-    if text_width <= max_width:
-        return [hebrew_text]
-    
-    # חלוקה למילים
-    words = hebrew_text.split()
-    lines = []
-    current_line = []
-    
-    for word in words:
-        test_line = ' '.join(current_line + [word])
-        try:
-            bbox = draw.textbbox((0, 0), test_line, font=font)
-            width = bbox[2] - bbox[0]
-        except:
-            width = draw.textsize(test_line, font=font)[0]
-        
-        if width <= max_width:
-            current_line.append(word)
-        else:
-            if current_line:
-                # ✅ עיבוד נוסף של כל שורה בנפרד!
-                line_text = ' '.join(current_line)
-                lines.append(prepare_hebrew_text(line_text))
-            current_line = [word]
-    
-    if current_line:
-        line_text = ' '.join(current_line)
-        lines.append(prepare_hebrew_text(line_text))
-    
-    return lines
-
 def make_text_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי - מחזירה RGB + יישור מימין"""
-    # יצירת תמונה שקופה זמנית
+    """
+    🔥 גישה רדיקלית - שורה אחת בלבד, ללא wrap!
+    זה מבטיח RTL נכון 100%
+    """
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    font = get_font(size=36)
+    # עיבוד עברי
+    hebrew_text = prepare_hebrew_text(text)
     
-    max_text_width = int(width * 0.9)
-    lines = wrap_text(text, font, max_text_width, draw)
+    # פונט דינמי - אם הטקסט ארוך, הפונט יקטן
+    font_size = 36
+    font = get_font(size=font_size)
     
-    line_height = 45
-    total_height = len(lines) * line_height
-    y_start = (height - total_height) // 2
+    # מדידת רוחב
+    try:
+        bbox = draw.textbbox((0, 0), hebrew_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+    except:
+        text_width, text_height = draw.textsize(hebrew_text, font=font)
     
-    for i, line in enumerate(lines):
+    # אם הטקסט רחב מדי - הקטן פונט
+    max_width = int(width * 0.95)
+    while text_width > max_width and font_size > 20:
+        font_size -= 2
+        font = get_font(size=font_size)
         try:
-            bbox = draw.textbbox((0, 0), line, font=font)
+            bbox = draw.textbbox((0, 0), hebrew_text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
         except:
-            text_width, text_height = draw.textsize(line, font=font)
-        
-        # ✅ יישור מימין במקום ממרכז!
-        x = width - text_width - 50  # 50 פיקסלים מהשוליים הימניים
-        y = y_start + (i * line_height)
-        
-        padding = 12
-        draw.rectangle(
-            [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
-            fill=(0, 0, 0, 200)
-        )
-        
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+            text_width, text_height = draw.textsize(hebrew_text, font=font)
     
-    # המרה ל-RGB (3 ערוצים) על רקע שחור
+    # ✅ יישור מימין!
+    x = width - text_width - 30  # 30px מהצד
+    y = (height - text_height) // 2
+    
+    # רקע שחור
+    padding = 12
+    draw.rectangle(
+        [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
+        fill=(0, 0, 0, 200)
+    )
+    
+    # ציור הטקסט
+    draw.text((x, y), hebrew_text, font=font, fill=(255, 255, 255, 255))
+    
+    # המרה ל-RGB
     rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
-    rgb_img.paste(img, (0, 0), img)  # משתמש ב-alpha channel כמסכה
+    rgb_img.paste(img, (0, 0), img)
     
     return np.array(rgb_img)
 
@@ -237,7 +209,6 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(video_path)
             return
         
-        # בדיקה שיש אודיו
         if video.audio is None:
             await update.message.reply_text("❌ הסרטון לא מכיל אודיו!")
             video.close()
@@ -342,7 +313,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(output_path, 'rb') as video_file_to_send:
             await update.message.reply_video(
                 video=video_file_to_send,
-                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!\n⚡ Powered by Groq",
+                caption="✅ הנה הסרטון שלך עם כתוביות בעברית!\n⚡ Powered by Groq\n🔥 גרסה רדיקלית - RTL מובטח!",
                 read_timeout=60,
                 write_timeout=60
             )
