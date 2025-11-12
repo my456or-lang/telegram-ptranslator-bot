@@ -4,12 +4,13 @@ from deep_translator import GoogleTranslator
 from bidi.algorithm import get_display
 import arabic_reshaper
 import os
+import imageio_ffmpeg
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Translation video bot is running."
+    return "✅ Translation video bot is running."
 
 @app.route('/process', methods=['POST'])
 def process_video():
@@ -20,7 +21,7 @@ def process_video():
     if not video_url:
         return jsonify({"error": "video_url is required"}), 400
 
-    # הורדת וידאו (אפשר להשתמש בנתיב קובץ זמני או קישור)
+    # הורדת וידאו
     input_path = "input.mp4"
     os.system(f"curl -L '{video_url}' -o {input_path}")
 
@@ -29,11 +30,10 @@ def process_video():
     reshaped_text = arabic_reshaper.reshape(translated_text)
     bidi_text = get_display(reshaped_text)
 
-    # פתיחת וידאו
+    # יצירת כתוביות
     clip = VideoFileClip(input_path)
-    txt_clip = TextClip(bidi_text, fontsize=40, color='black', font='Arial', bg_color='white')
-    txt_clip = txt_clip.set_duration(clip.duration)
-    txt_clip = txt_clip.set_position(('center', 'bottom'))
+    txt_clip = TextClip(bidi_text, fontsize=40, color='white', bg_color='black', font='Arial')
+    txt_clip = txt_clip.set_duration(clip.duration).set_position(('center', 'bottom'))
 
     final = CompositeVideoClip([clip, txt_clip])
     output_path = "output.mp4"
