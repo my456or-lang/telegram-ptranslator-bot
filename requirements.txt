@@ -1,9 +1,7 @@
-numpy
-Pillow
-python-telegram-bot
+Flask
 deep-translator
 moviepy
-flask
+imageio[ffmpeg]
 python-bidi
 arabic-reshaper
 requests
