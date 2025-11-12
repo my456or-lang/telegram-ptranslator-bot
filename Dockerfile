@@ -1,20 +1,24 @@
-# בסיס של פייתון
 FROM python:3.11-slim
 
-# התקנת ffmpeg ו־curl
-RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
+# התקנת כל התלויות הדרושות ל-moviepy (כולל ffmpeg, ImageMagick, fonts, וכו')
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    imagemagick \
+    libx11-6 \
+    libsm6 \
+    libxext6 \
+    libgl1 \
+    fonts-dejavu-core \
+    curl && \
+    rm -rf /var/lib/apt/lists/*
 
-# הגדרת סביבת עבודה
 WORKDIR /app
 
-# העתקת כל הקבצים
-COPY . .
-
-# התקנת תלויות
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# פתיחת פורט
+COPY . .
+
 EXPOSE 10000
 
-# הפעלת השרת
 CMD ["python", "app.py"]
