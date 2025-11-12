@@ -1,16 +1,18 @@
-# GroqSubsBot
+# 🎬 Telegram Subtitle Bot (Groq Whisper + Hebrew Translation)
 
-🎬 Hebrew subtitle translator bot powered by Groq AI
+בוט טלגרם שמתרגם **אוטומטית כתוביות מאנגלית לעברית** על גבי סרטונים.
+מבוסס על:
+- 🧠 Whisper דרך Groq API לתמלול מהיר
+- 🌍 Google Translator לתרגום לעברית
+- 🎨 MoviePy + Pillow להוספת כתוביות מעוצבות
+- 🐳 Docker ו-Flask להרצה נוחה בענן
 
-## Features
-- Transcribes video audio using Groq Whisper
-- Translates to Hebrew
-- Adds Hebrew subtitles to video
-- Fast and free!
+---
 
-## Usage
-1. Start the bot: /start
-2. Send a video (max 10 min, 50MB)
-3. Wait for subtitled video
+## 🚀 הפעלה מקומית (ללא Docker)
 
-Powered by Groq ⚡
+1. צור קובץ `.env` לפי `.env.example`  
+   והזן את:
+   ```bash
+   TELEGRAM_BOT_TOKEN=...
+   GROQ_API_KEY=...
