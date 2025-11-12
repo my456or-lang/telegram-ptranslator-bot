@@ -1,8 +1,7 @@
-Flask
-deep-translator
-moviepy
-imageio[ffmpeg]
-python-bidi
-arabic-reshaper
-requests
-googletrans==4.0.0-rc1
+Flask==3.0.0
+deep-translator==1.11.4
+moviepy==1.0.3
+imageio[ffmpeg]==2.31.1
+python-bidi==0.4.2
+arabic-reshaper==3.0.0
+requests==2.31.0
