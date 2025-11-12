@@ -8,5 +8,3 @@ python-bidi==0.4.2
 arabic-reshaper==3.0.0
 requests==2.31.0
 googletrans==4.0.0-rc1
-httpx==0.23.3
-anyio==3.7.1
