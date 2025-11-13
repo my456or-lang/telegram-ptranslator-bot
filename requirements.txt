@@ -1,5 +1,6 @@
 telebot
 requests
 moviepy
+pillow
 deep-translator
 groq
