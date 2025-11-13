@@ -1,17 +1,12 @@
 from flask import Flask, request
 import telebot
-from moviepy.editor import VideoFileClip, CompositeVideoClip, ImageClip
+from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
 from deep_translator import GoogleTranslator
 from bidi.algorithm import get_display
 import arabic_reshaper
-import os
 from PIL import Image, ImageDraw, ImageFont
-import numpy as np
-import textwrap
+import os
 
-# ==========
-# קריאת TOKEN מהסביבה (Render)
-# ==========
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("❌ TELEGRAM_TOKEN לא הוגדר במשתני הסביבה!")
@@ -19,140 +14,50 @@ if not TOKEN:
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# פונקציות עזר ליצירת תמונת כתובית עם PIL
-def get_font(size=42):
-    # נסה פונט קיים במערכת; DejaVu בדרך כלל מותקן על דוקר בסיסי
-    candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ]
-    for p in candidates:
-        if os.path.exists(p):
-            try:
-                return ImageFont.truetype(p, size)
-            except:
-                continue
-    return ImageFont.load_default()
-
-def wrap_text_for_width(text, font, max_width, draw):
-    # מחלק טקסט לשורות לפי רוחב מקסימלי
-    words = text.split()
-    lines = []
-    cur = ""
-    for w in words:
-        test = (w + " " + cur).strip()  # RTL-aware order is handled before calling
-        bbox = draw.textbbox((0,0), test, font=font)
-        width = bbox[2] - bbox[0]
-        if width <= max_width:
-            cur = test
-        else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
-    return lines
-
-def make_subtitle_image(text, width, height, fontsize=42):
-    """מחזיר numpy array (H,W,3) של תמונה עם רקע שחור וטקסט לבן עם outline"""
-    img = Image.new("RGBA", (width, height), (0, 0, 0, 255))  # שחור אטום
-    draw = ImageDraw.Draw(img)
-    font = get_font(size=fontsize)
-
-    # טקסט בעברית — כבר עבר reshape + bidi לפני הקריאה
-    max_text_w = int(width * 0.9)
-    # להלן עטיפת טקסט
-    lines = wrap_text_for_width(text, font, max_text_w, draw)
-
-    line_h = int(font.getsize("A")[1] * 1.4)
-    total_h = len(lines) * line_h
-    y_start = (height - total_h) // 2
-
-    # ציור כל שורה עם outline (קונטור) ואז טקסט לבן
-    outline = 2
-    for i, line in enumerate(lines):
-        bbox = draw.textbbox((0,0), line, font=font)
-        text_w = bbox[2] - bbox[0]
-        x = (width - text_w) // 2
-        y = y_start + i * line_h
-        # קונטור שחור סביב הטקסט
-        for ox in range(-outline, outline+1):
-            for oy in range(-outline, outline+1):
-                draw.text((x+ox, y+oy), line, font=font, fill=(0,0,0,255))
-        # טקסט לבן מעל
-        draw.text((x, y), line, font=font, fill=(255,255,255,255))
-
-    # המרת RGBA -> RGB (moviepy ImageClip יכול לקבל גם RGBA אבל לפשטות נחזיר RGB)
-    rgb = Image.new("RGB", img.size, (0,0,0))
-    rgb.paste(img, mask=img.split()[3])  # משמר אלפא
-    arr = np.array(rgb)
-    return arr
-
-# ======================
-# פקודת /start – הודעת פתיחה
-# ======================
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(message, "היי 👋 שלח לי סרטון (עד ~50MB) ואני אתרגם אותו לעברית!")
+    bot.reply_to(message, "היי 👋 שלח לי סרטון ואני אתרגם אותו לעברית!")
 
-# ======================
-# טיפול בסרטון שנשלח
-# ======================
 @bot.message_handler(content_types=['video'])
 def handle_video(message):
     try:
         file_info = bot.get_file(message.video.file_id)
         file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
         input_path = "input.mp4"
-        # הורדת קובץ
         os.system(f"curl -L '{file_url}' -o {input_path}")
 
-        # כאן צריך להחליף לוגיקה אמיתית של תמלול -> מקבל טקסטים. בינתיים דוגמה:
-        raw_text = "Hello world"  # TODO: תחליף בתמלול אמיתי מהאודיו
-
-        # תרגום באמצעות deep_translator (שימוש ב־'iw' לעברית)
-        translated = GoogleTranslator(source='auto', target='iw').translate(raw_text)
+        # טקסט לדוגמה
+        text = "Hello world"
+        translated = GoogleTranslator(source='auto', target='iw').translate(text)
         reshaped = arabic_reshaper.reshape(translated)
         bidi_text = get_display(reshaped)
 
-        # יצירת תמונת כתובית בגודל וידאו
+        # יצירת תמונת טקסט
+        font = ImageFont.truetype("DejaVuSans.ttf", 40)
+        img = Image.new("RGB", (1280, 100), color=(255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        text_w, text_h = draw.textbbox((0, 0), bidi_text, font=font)[2:]
+        draw.text(((1280 - text_w) / 2, (100 - text_h) / 2), bidi_text, fill=(0, 0, 0), font=font)
+        text_img_path = "text.png"
+        img.save(text_img_path)
+
+        # יצירת קליפ של הכתובית
         clip = VideoFileClip(input_path)
-        w, h = clip.size
-        subtitle_h = int(h * 0.18)  # גובה איזור הכתוביות
-        img_arr = make_subtitle_image(bidi_text, w, subtitle_h, fontsize=max(28, int(subtitle_h*0.28)))
-
-        # ImageClip מתוך numpy array
-        subtitle_clip = ImageClip(img_arr).set_duration(clip.duration).set_start(0).set_position(("center", h - subtitle_h - 20))
-
-        final = CompositeVideoClip([clip, subtitle_clip])
+        txt_clip = ImageClip(text_img_path).set_duration(clip.duration).set_position(("center", "bottom"))
+        final = CompositeVideoClip([clip, txt_clip])
         output_path = "output.mp4"
-        final.write_videofile(output_path, codec='libx264', audio_codec='aac', threads=2, verbose=False, logger=None)
+        final.write_videofile(output_path, codec='libx264', audio_codec='aac')
 
-        # שליחת הסרטון המתורגם
         with open(output_path, 'rb') as video:
             bot.send_video(message.chat.id, video, caption="🎬 הנה הסרטון המתורגם שלך!")
 
-        # ניקוי
-        try:
-            os.remove(input_path)
-        except:
-            pass
-        try:
-            os.remove(output_path)
-        except:
-            pass
+        os.remove(input_path)
+        os.remove(output_path)
+        os.remove(text_img_path)
 
     except Exception as e:
-        # שליחת שגיאה נגישה למשתמש
-        try:
-            bot.reply_to(message, f"❌ שגיאה בעיבוד הסרטון: {e}")
-        except:
-            pass
+        bot.reply_to(message, f"שגיאה בעיבוד הסרטון: {e}")
 
-# ======================
-# ניהול Webhook
-# ======================
 @app.route('/')
 def index():
     return "✅ Translation bot is running!"
