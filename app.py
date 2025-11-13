@@ -6,31 +6,40 @@ from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
-# 🔹 טוקן מהסביבה
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ======================================================
-# 🧠 פונקציה שמוסיפה כתוביות בעברית ללא ImageMagick
+# 🧠 פונקציה שמוסיפה כתוביות בעברית תקינה (בלי הפוך, בלי ריבועים)
 # ======================================================
 def add_hebrew_subtitles(input_path, output_path, text):
     clip = VideoFileClip(input_path)
+
+    # 🔹 התקנת גופן עברי אם אין
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if not os.path.exists(font_path):
+        os.system("apt-get update && apt-get install -y fonts-noto-cjk fonts-noto-color-emoji fonts-noto-core fonts-freefont-ttf")
+        font_path = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 
-    # MoviePy לא תומך RTL → הופכים את הסדר
-    text = text[::-1]
+    # 🔹 עדיף גופן עברי נורמלי (אם יש בשרת)
+    hebrew_font = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+    if os.path.exists("/usr/share/fonts/truetype/freefont/FreeSans.ttf"):
+        hebrew_font = "/usr/share/fonts/truetype/freefont/FreeSans.ttf"
 
-    # יצירת תמונה עם טקסט בעזרת Pillow
-    font = ImageFont.truetype(font_path, 60)
+    font = ImageFont.truetype(hebrew_font, 60)
 
-    # מחשבים את גודל הטקסט לפי גרסת Pillow
+    # 🟢 לא הופכים את הטקסט!
+    text = text.strip()
+
+    # מחשבים את הגודל של הכתובית
     dummy_img = Image.new("RGBA", (1, 1))
     draw = ImageDraw.Draw(dummy_img)
     bbox = draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
 
-    img = Image.new("RGBA", (text_w + 60, text_h + 40), (0, 0, 0, 180))
+    # יוצרים רקע כהה מאחורי הכתובית
+    img = Image.new("RGBA", (text_w + 60, text_h + 40), (0, 0, 0, 160))
     draw = ImageDraw.Draw(img)
     draw.text((30, 20), text, font=font, fill=(255, 255, 255, 255))
 
@@ -62,7 +71,7 @@ def send_video(chat_id, video_path, caption=None):
         requests.post(f"{BASE_URL}/sendVideo", data={"chat_id": chat_id, "caption": caption}, files={"video": video})
 
 # ======================================================
-# 📬 נקודת Webhook
+# 📬 Webhook
 # ======================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -80,21 +89,14 @@ def webhook():
 
     if "video" in message:
         send_message(chat_id, "⏳ מעבד את הסרטון שלך... זה עשוי לקחת דקה-שתיים.")
-
         try:
             file_id = message["video"]["file_id"]
             file_info = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()
-
-            if "result" not in file_info:
-                send_message(chat_id, "❌ שגיאה: לא ניתן לגשת לקובץ הסרטון.")
-                return "ok"
-
             file_path = file_info["result"]["file_path"]
             file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
 
             input_video = "input.mp4"
             output_video = "output.mp4"
-
             with open(input_video, "wb") as f:
                 f.write(requests.get(file_url).content)
 
