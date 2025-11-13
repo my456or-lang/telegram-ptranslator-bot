@@ -1,73 +1,134 @@
-from flask import Flask, request
-import telebot
-from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
-from deep_translator import GoogleTranslator
-from bidi.algorithm import get_display
-import arabic_reshaper
-from PIL import Image, ImageDraw, ImageFont
 import os
+import tempfile
+import requests
+from flask import Flask, request
+from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
+from PIL import Image, ImageDraw, ImageFont
+import numpy as np
+import arabic_reshaper
+from bidi.algorithm import get_display
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-if not TOKEN:
-    raise ValueError("❌ TELEGRAM_TOKEN לא הוגדר במשתני הסביבה!")
-
-bot = telebot.TeleBot(TOKEN)
+# הגדרות Flask
 app = Flask(__name__)
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "היי 👋 שלח לי סרטון ואני אתרגם אותו לעברית!")
+# טוקן של הבוט מהסביבה
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+BASE_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-@bot.message_handler(content_types=['video'])
-def handle_video(message):
+# 🟢 פונקציה ליצירת תמונת טקסט בעברית
+def create_text_image(text, size=(720, 100), font_size=48):
+    img = Image.new("RGB", size, color="white")
+
+    # טעינת גופן תומך עברית
     try:
-        file_info = bot.get_file(message.video.file_id)
-        file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        input_path = "input.mp4"
-        os.system(f"curl -L '{file_url}' -o {input_path}")
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except:
+        font = ImageFont.load_default()
 
-        # טקסט לדוגמה
-        text = "Hello world"
-        translated = GoogleTranslator(source='auto', target='iw').translate(text)
-        reshaped = arabic_reshaper.reshape(translated)
-        bidi_text = get_display(reshaped)
+    draw = ImageDraw.Draw(img)
 
-        # יצירת תמונת טקסט
-        font = ImageFont.truetype("DejaVuSans.ttf", 40)
-        img = Image.new("RGB", (1280, 100), color=(255, 255, 255))
-        draw = ImageDraw.Draw(img)
-        text_w, text_h = draw.textbbox((0, 0), bidi_text, font=font)[2:]
-        draw.text(((1280 - text_w) / 2, (100 - text_h) / 2), bidi_text, fill=(0, 0, 0), font=font)
-        text_img_path = "text.png"
-        img.save(text_img_path)
+    # עיבוד טקסט עברי
+    reshaped_text = arabic_reshaper.reshape(text)
+    bidi_text = get_display(reshaped_text)
 
-        # יצירת קליפ של הכתובית
-        clip = VideoFileClip(input_path)
-        txt_clip = ImageClip(text_img_path).set_duration(clip.duration).set_position(("center", "bottom"))
-        final = CompositeVideoClip([clip, txt_clip])
-        output_path = "output.mp4"
-        final.write_videofile(output_path, codec='libx264', audio_codec='aac')
+    # חישוב מיקום לימין
+    bbox = draw.textbbox((0, 0), bidi_text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    x = size[0] - text_width - 20
+    y = (size[1] - text_height) / 2
 
-        with open(output_path, 'rb') as video:
-            bot.send_video(message.chat.id, video, caption="🎬 הנה הסרטון המתורגם שלך!")
+    draw.text((x, y), bidi_text, fill="black", font=font)
+    return np.array(img)
 
-        os.remove(input_path)
-        os.remove(output_path)
-        os.remove(text_img_path)
 
-    except Exception as e:
-        bot.reply_to(message, f"שגיאה בעיבוד הסרטון: {e}")
+# 🟢 פונקציה ליצירת סרטון עם כתוביות בעברית
+def process_video(video_path, translated_text):
+    clip = VideoFileClip(video_path)
 
-@app.route('/')
-def index():
-    return "✅ Translation bot is running!"
+    # יצירת כיתוב עברי מתוקן
+    txt_img = create_text_image(translated_text, size=(clip.w, 100))
+    txt_clip = ImageClip(txt_img).set_duration(clip.duration).set_position(("center", "bottom"))
 
-@app.route('/webhook', methods=['POST'])
+    # שילוב הסרטון עם הכיתוב
+    final = CompositeVideoClip([clip, txt_clip])
+
+    # שמירת הסרטון הסופי
+    output_path = os.path.join(tempfile.gettempdir(), "translated.mp4")
+    final.write_videofile(output_path, codec="libx264", audio_codec="aac")
+
+    clip.close()
+    final.close()
+    return output_path
+
+
+# 🟢 שליחת הודעה
+def send_message(chat_id, text):
+    url = f"{BASE_URL}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    requests.post(url, json=payload)
+
+
+# 🟢 שליחת סרטון
+def send_video(chat_id, video_path, caption="🎬 הנה הסרטון המתורגם שלך!"):
+    url = f"{BASE_URL}/sendVideo"
+    with open(video_path, "rb") as video:
+        files = {"video": video}
+        data = {"chat_id": chat_id, "caption": caption}
+        requests.post(url, data=data, files=files)
+
+
+# 🟢 הנתיב הראשי לבדיקה
+@app.route("/")
+def home():
+    return "✅ הבוט פעיל ועובד!"
+
+
+# 🟢 וובהוק – כאן מטפלות הבקשות מהטלגרם
+@app.route("/webhook", methods=["POST"])
 def webhook():
-    json_str = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return '', 200
+    data = request.get_json()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    if "message" not in data:
+        return "No message", 200
+
+    message = data["message"]
+    chat_id = message["chat"]["id"]
+
+    # אם התקבל וידאו
+    if "video" in message:
+        file_id = message["video"]["file_id"]
+        send_message(chat_id, "⏳ מעבד את הסרטון שלך, זה ייקח רגע...")
+
+        # שליפת קובץ מהטלגרם
+        file_info = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()
+        file_path = file_info["result"]["file_path"]
+        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_path}"
+
+        # שמירה זמנית
+        local_video = os.path.join(tempfile.gettempdir(), "input.mp4")
+        with open(local_video, "wb") as f:
+            f.write(requests.get(file_url).content)
+
+        try:
+            # כאן שים את הטקסט שאתה רוצה שיופיע
+            translated_text = "שלום עולם"
+
+            output_video = process_video(local_video, translated_text)
+            send_video(chat_id, output_video)
+
+        except Exception as e:
+            send_message(chat_id, f"❌ שגיאה בעיבוד הסרטון: {e}")
+        finally:
+            if os.path.exists(local_video):
+                os.remove(local_video)
+
+    else:
+        send_message(chat_id, "שלח לי סרטון כדי שאתרגם אותו 🎥")
+
+    return "OK", 200
+
+
+# 🟢 הפעלת השרת
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
