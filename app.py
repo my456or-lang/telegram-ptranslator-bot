@@ -1,55 +1,49 @@
 import os
 import requests
 from flask import Flask, request
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
+from moviepy.editor import VideoFileClip, CompositeVideoClip, ImageClip
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
-
-# 🔹 התקנת גופן עברי ברגע שהשרת עולה
-os.system("apt-get update && apt-get install -y fonts-dejavu-core")
 
 # 🔹 טוקן מהסביבה
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ======================================================
-# 🧠 פונקציה שמוסיפה כתוביות בעברית (עם כיוון נכון)
+# 🧠 פונקציה שמוסיפה כתוביות בעברית ללא שימוש ב-ImageMagick
 # ======================================================
 def add_hebrew_subtitles(input_path, output_path, text):
     clip = VideoFileClip(input_path)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-    # MoviePy לא תומך RTL → לכן הופכים את המחרוזת ידנית
+    # היפוך טקסט (כי MoviePy לא תומך RTL)
     text = text[::-1]
 
-    # ✅ שימוש ב־method='label' עוקף את באג ה־ImageMagick
-    txt_clip = TextClip(
-        text,
-        fontsize=60,
-        color='white',
-        font=font_path,
-        method='label',  # עוקף בעיית ImageMagick
+    # יצירת תמונה עם טקסט באמצעות Pillow בלבד
+    font = ImageFont.truetype(font_path, 60)
+    text_w, text_h = font.getsize(text)
+    img = Image.new("RGBA", (text_w + 60, text_h + 40), (0, 0, 0, 180))
+    draw = ImageDraw.Draw(img)
+    draw.text((30, 20), text, font=font, fill=(255, 255, 255, 255))
+
+    # שמירת התמונה כקובץ זמני
+    temp_img = "subtitle.png"
+    img.save(temp_img)
+
+    # טעינת הכתובית כתמונה ל־MoviePy
+    subtitle_clip = (
+        ImageClip(temp_img)
+        .set_duration(clip.duration)
+        .set_position(("center", clip.h - 150))
     )
-
-    # רקע שחור שקוף מאחורי הכתוביות
-    background = ColorClip(size=(txt_clip.w + 40, txt_clip.h + 20), color=(0, 0, 0))
-    background = background.set_opacity(0.6)
-
-    # שילוב רקע וטקסט
-    txt_with_bg = CompositeVideoClip(
-        [
-            background.set_position(("center", "center")),
-            txt_clip.set_position(("center", "center"))
-        ],
-        size=background.size
-    )
-
-    # מיקום הכתוביות בתחתית הסרטון
-    txt_with_bg = txt_with_bg.set_position(("center", clip.h - 150)).set_duration(clip.duration)
 
     # חיבור הכתוביות לסרטון
-    final = CompositeVideoClip([clip, txt_with_bg])
+    final = CompositeVideoClip([clip, subtitle_clip])
     final.write_videofile(output_path, codec="libx264", audio_codec="aac")
+
+    # ניקוי קובץ זמני
+    os.remove(temp_img)
 
 # ======================================================
 # 📩 שליחת הודעה בטלגרם
@@ -77,12 +71,10 @@ def webhook():
     message = data["message"]
     chat_id = message["chat"]["id"]
 
-    # 🟢 פקודת התחלה
     if "text" in message and message["text"] == "/start":
         send_message(chat_id, "👋 היי! שלח לי סרטון ואני אוסיף לו כתוביות בעברית!")
         return "ok"
 
-    # 🎬 סרטון שנשלח
     if "video" in message:
         send_message(chat_id, "⏳ מעבד את הסרטון שלך... זה עשוי לקחת דקה-שתיים.")
 
@@ -100,36 +92,26 @@ def webhook():
             input_video = "input.mp4"
             output_video = "output.mp4"
 
-            # הורדת הסרטון
             with open(input_video, "wb") as f:
                 f.write(requests.get(file_url).content)
 
-            # הוספת כתוביות
             add_hebrew_subtitles(input_video, output_video, "שלום עולם 🌍")
 
-            # שליחת הסרטון חזרה
             send_video(chat_id, output_video, "🎬 הנה הסרטון שלך עם כתוביות בעברית!")
 
         except Exception as e:
             send_message(chat_id, f"❌ שגיאה בעיבוד הסרטון: {e}")
 
         finally:
-            # ניקוי קבצים זמניים
             for path in ["input.mp4", "output.mp4"]:
                 if os.path.exists(path):
                     os.remove(path)
 
     return "ok"
 
-# ======================================================
-# 🧭 דף הבית
-# ======================================================
 @app.route("/")
 def index():
     return "✅ Telegram Hebrew Subtitle Bot is running!"
 
-# ======================================================
-# 🚀 הפעלת השרת
-# ======================================================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
