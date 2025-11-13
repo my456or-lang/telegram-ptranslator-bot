@@ -1,7 +1,5 @@
-telebot==0.0.5
-requests
-deep-translator
-groq
-langdetect
+pyTelegramBotAPI
 moviepy
-Pillow
+langdetect
+Flask
+groq
