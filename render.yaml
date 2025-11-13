@@ -1,15 +1,13 @@
 services:
   - type: web
     name: telegram-ptranslator-bot
-    env: python
+    env: docker
     plan: free
-    region: oregon
-    buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    autoDeploy: true
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
       - key: PORT
-        value: 10000
-      - key: WEBHOOK_URL
-        value: https://<YOUR-RENDER-APP-NAME>.onrender.com
+        value: 8080
