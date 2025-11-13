@@ -11,38 +11,41 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 # ======================================================
-# 🧠 פונקציה שמוסיפה כתוביות בעברית ללא שימוש ב-ImageMagick
+# 🧠 פונקציה שמוסיפה כתוביות בעברית ללא ImageMagick
 # ======================================================
 def add_hebrew_subtitles(input_path, output_path, text):
     clip = VideoFileClip(input_path)
     font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-    # היפוך טקסט (כי MoviePy לא תומך RTL)
+    # MoviePy לא תומך RTL → הופכים את הסדר
     text = text[::-1]
 
-    # יצירת תמונה עם טקסט באמצעות Pillow בלבד
+    # יצירת תמונה עם טקסט בעזרת Pillow
     font = ImageFont.truetype(font_path, 60)
-    text_w, text_h = font.getsize(text)
+
+    # מחשבים את גודל הטקסט לפי גרסת Pillow
+    dummy_img = Image.new("RGBA", (1, 1))
+    draw = ImageDraw.Draw(dummy_img)
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+
     img = Image.new("RGBA", (text_w + 60, text_h + 40), (0, 0, 0, 180))
     draw = ImageDraw.Draw(img)
     draw.text((30, 20), text, font=font, fill=(255, 255, 255, 255))
 
-    # שמירת התמונה כקובץ זמני
     temp_img = "subtitle.png"
     img.save(temp_img)
 
-    # טעינת הכתובית כתמונה ל־MoviePy
     subtitle_clip = (
         ImageClip(temp_img)
         .set_duration(clip.duration)
         .set_position(("center", clip.h - 150))
     )
 
-    # חיבור הכתוביות לסרטון
     final = CompositeVideoClip([clip, subtitle_clip])
     final.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
-    # ניקוי קובץ זמני
     os.remove(temp_img)
 
 # ======================================================
@@ -59,7 +62,7 @@ def send_video(chat_id, video_path, caption=None):
         requests.post(f"{BASE_URL}/sendVideo", data={"chat_id": chat_id, "caption": caption}, files={"video": video})
 
 # ======================================================
-# 📬 נקודת קליטת Webhook מטלגרם
+# 📬 נקודת Webhook
 # ======================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
