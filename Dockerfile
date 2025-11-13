@@ -1,24 +1,18 @@
+# שלב 1: בסיס
 FROM python:3.11-slim
 
-# התקנת כל התלויות הדרושות ל-moviepy (כולל ffmpeg, ImageMagick, fonts, וכו')
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    imagemagick \
-    libx11-6 \
-    libsm6 \
-    libxext6 \
-    libgl1 \
-    fonts-dejavu-core \
-    curl && \
-    rm -rf /var/lib/apt/lists/*
+# התקנת תלות מערכת (ffmpeg עבור moviepy)
+RUN apt-get update && apt-get install -y ffmpeg && apt-get clean
 
+# העתקת קבצים
 WORKDIR /app
+COPY . /app
 
-COPY requirements.txt .
+# התקנת חבילות
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+# משתני סביבה
+ENV PORT=8080
 
-EXPOSE 10000
-
+# הפעלת הבוט
 CMD ["python", "app.py"]
