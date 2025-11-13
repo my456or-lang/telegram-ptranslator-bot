@@ -1,7 +1,7 @@
 telebot==0.0.5
-requests==2.32.3
-moviepy==1.0.3
-Pillow==10.3.0
-deep-translator==1.11.4
-langdetect==1.0.9
-groq==0.4.2
+requests
+deep-translator
+groq
+langdetect
+moviepy
+Pillow
