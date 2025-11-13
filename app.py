@@ -44,7 +44,7 @@ def handle_video(message):
 
         # הוספת כתוביות
         clip = VideoFileClip(input_path)
-        txt_clip = TextClip(bidi_text, fontsize=40, color='black', bg_color='white', font='Arial')
+        txt_clip = TextClip(bidi_text, fontsize=40, color='black', bg_color='white', method='caption')
         txt_clip = txt_clip.set_duration(clip.duration).set_position(('center', 'bottom'))
         final = CompositeVideoClip([clip, txt_clip])
         output_path = "output.mp4"
