@@ -1,8 +1,6 @@
 pyTelegramBotAPI
 requests
 moviepy
-Pillow
+pillow
 deep-translator
 groq
-imageio
-imageio-ffmpeg
