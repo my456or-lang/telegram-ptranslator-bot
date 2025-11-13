@@ -37,15 +37,22 @@ def handle_video(message):
         # טקסט לדוגמה (בהמשך נחלץ מהוידאו)
         text = "Hello world"
 
-        # תרגום לעברית
+        # תרגום לעברית (שפה = iw)
         translated = GoogleTranslator(source='auto', target='iw').translate(text)
         reshaped = arabic_reshaper.reshape(translated)
         bidi_text = get_display(reshaped)
 
-        # הוספת כתוביות
+        # הוספת כתוביות – שימוש ב־Pillow במקום ImageMagick
         clip = VideoFileClip(input_path)
-        txt_clip = TextClip(bidi_text, fontsize=40, color='black', bg_color='white', method='caption')
+        txt_clip = TextClip(
+            bidi_text,
+            fontsize=40,
+            color='black',
+            bg_color='white',
+            method='caption'  # <== התיקון החשוב!
+        )
         txt_clip = txt_clip.set_duration(clip.duration).set_position(('center', 'bottom'))
+
         final = CompositeVideoClip([clip, txt_clip])
         output_path = "output.mp4"
         final.write_videofile(output_path, codec='libx264', audio_codec='aac')
