@@ -38,7 +38,7 @@ def handle_video(message):
         text = "Hello world"
 
         # תרגום לעברית
-        translated = GoogleTranslator(source='auto', target='he').translate(text)
+        translated = GoogleTranslator(source='auto', target='iw').translate(text)
         reshaped = arabic_reshaper.reshape(translated)
         bidi_text = get_display(reshaped)
 
