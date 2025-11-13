@@ -1,88 +1,151 @@
 import os
-import telebot
-import tempfile
+import requests
+from flask import Flask, request
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 from deep_translator import GoogleTranslator
 from groq import Groq
-from PIL import ImageFont, Image, ImageDraw
-import arabic_reshaper
-from bidi.algorithm import get_display
-import requests
 
-# --- קריאת משתני סביבה ---
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+# 🌍 יצירת אפליקציית Flask
+app = Flask(__name__)
+
+# 🧠 מפתח ה־API של Groq מהסביבה
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-
-# --- אתחול ---
-bot = telebot.TeleBot(BOT_TOKEN)
 client = Groq(api_key=GROQ_API_KEY)
 
-# --- הודעת התחלה ---
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "👋 שלח לי סרטון באנגלית ואני אוסיף לו כתוביות בעברית 🎧📜")
+# 🤖 טוקן של בוט טלגרם
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
-# --- קבלת סרטון ---
-@bot.message_handler(content_types=['video'])
-def handle_video(message):
-    try:
-        bot.reply_to(message, "🎬 מוריד את הסרטון שלך...")
+# ======================================================
+# 🎧 פונקציה: הפקת תמלול מהסרטון (באנגלית)
+# ======================================================
+def transcribe_audio(audio_path):
+    with open(audio_path, "rb") as f:
+        transcription = client.audio.transcriptions.create(
+            file=f,
+            model="whisper-large-v3",
+            response_format="text"
+        )
+    return transcription.strip()
 
-        # הורדת הסרטון
-        file_info = bot.get_file(message.video.file_id)
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-        response = requests.get(file_url)
-        video_path = tempfile.mktemp(suffix=".mp4")
+# ======================================================
+# 🌍 תרגום טקסט לאנגלית → עברית
+# ======================================================
+def translate_to_hebrew(text):
+    return GoogleTranslator(source="en", target="he").translate(text)
 
-        with open(video_path, "wb") as f:
-            f.write(response.content)
+# ======================================================
+# 🧠 הוספת כתוביות בעברית
+# ======================================================
+def add_hebrew_subtitles(input_path, output_path, text):
+    clip = VideoFileClip(input_path)
+    font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-        bot.reply_to(message, "🎧 ממיר את הדיבור לטקסט...")
+    # הפוך את סדר האותיות לעברית (MoviePy לא תומך RTL)
+    hebrew_text = text[::-1]
 
-        # הפקת אודיו מהסרטון
-        clip = VideoFileClip(video_path)
-        audio_path = tempfile.mktemp(suffix=".wav")
-        clip.audio.write_audiofile(audio_path)
+    txt_clip = TextClip(
+        hebrew_text,
+        fontsize=60,
+        color="white",
+        font=font_path,
+        method="caption",
+        align="East",
+        size=(clip.w - 100, None),
+    )
 
-        # שליחה ל־Groq לזיהוי דיבור
-        with open(audio_path, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                file=audio_file,
-                model="whisper-large-v3"
-            )
-            english_text = transcript.text
+    txt_clip = txt_clip.set_position(("center", clip.h - 150)).set_duration(clip.duration)
+    result = CompositeVideoClip([clip, txt_clip])
+    result.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
-        # תרגום לעברית
-        hebrew_text = GoogleTranslator(source='en', target='he').translate(english_text)
+# ======================================================
+# 📩 שליחת הודעה בטלגרם
+# ======================================================
+def send_message(chat_id, text):
+    requests.post(f"{BASE_URL}/sendMessage", json={"chat_id": chat_id, "text": text})
 
-        # עיבוד טקסט לעברית (כיוון ימין לשמאל)
-        reshaped_text = arabic_reshaper.reshape(hebrew_text)
-        bidi_text = get_display(reshaped_text)
+# ======================================================
+# 🎥 שליחת סרטון חזרה
+# ======================================================
+def send_video(chat_id, video_path, caption=None):
+    with open(video_path, "rb") as video:
+        requests.post(f"{BASE_URL}/sendVideo", data={"chat_id": chat_id, "caption": caption}, files={"video": video})
 
-        # יצירת כתוביות
-        subtitle_path = tempfile.mktemp(suffix=".png")
-        font = ImageFont.truetype("arial.ttf", 48)
-        img = Image.new("RGBA", (clip.w, 150), (0, 0, 0, 128))
-        draw = ImageDraw.Draw(img)
-        w, h = draw.textsize(bidi_text, font=font)
-        draw.text(((clip.w - w) / 2, 40), bidi_text, font=font, fill="white")
-        img.save(subtitle_path)
+# ======================================================
+# 📬 Webhook — נקודת קליטת הודעות מטלגרם
+# ======================================================
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
 
-        subtitle = Image.open(subtitle_path)
-        subtitle_clip = (ImageClip(subtitle_path)
-                         .set_duration(clip.duration)
-                         .set_position(("center", "bottom")))
+    if "message" not in data:
+        return "ok"
 
-        final = CompositeVideoClip([clip, subtitle_clip])
-        output_path = tempfile.mktemp(suffix=".mp4")
-        final.write_videofile(output_path, codec='libx264', audio_codec='aac')
+    message = data["message"]
+    chat_id = message["chat"]["id"]
 
-        # שליחת הסרטון חזרה
-        with open(output_path, "rb") as vid:
-            bot.send_video(message.chat.id, vid, caption="🎬 הנה הסרטון עם כתוביות בעברית!")
+    # 🟢 פקודת /start
+    if "text" in message and message["text"] == "/start":
+        send_message(chat_id, "👋 שלח לי סרטון באנגלית ואוסיף לו כתוביות בעברית 🎧📜")
+        return "ok"
 
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ שגיאה בעיבוד הסרטון: {e}")
+    # 🎬 אם נשלח סרטון
+    if "video" in message:
+        send_message(chat_id, "🎬 מוריד את הסרטון שלך...")
 
-# --- הרצת הבוט ---
-bot.polling()
+        try:
+            file_id = message["video"]["file_id"]
+            file_info = requests.get(f"{BASE_URL}/getFile?file_id={file_id}").json()
+
+            if "result" not in file_info:
+                send_message(chat_id, "❌ לא ניתן לגשת לקובץ הסרטון.")
+                return "ok"
+
+            file_path = file_info["result"]["file_path"]
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_path}"
+
+            # שמירת הסרטון
+            input_video = "input.mp4"
+            with open(input_video, "wb") as f:
+                f.write(requests.get(file_url).content)
+
+            # חילוץ אודיו מהוידאו
+            send_message(chat_id, "🎧 ממיר את הדיבור לטקסט...")
+            clip = VideoFileClip(input_video)
+            audio_path = "audio.wav"
+            clip.audio.write_audiofile(audio_path)
+
+            # תמלול + תרגום
+            english_text = transcribe_audio(audio_path)
+            hebrew_text = translate_to_hebrew(english_text)
+
+            # הוספת כתוביות
+            send_message(chat_id, "📝 מוסיף כתוביות בעברית...")
+            output_video = "output.mp4"
+            add_hebrew_subtitles(input_video, output_video, hebrew_text)
+
+            # שליחת הסרטון המתורגם
+            send_video(chat_id, output_video, "🎬 הנה הסרטון שלך עם כתוביות בעברית!")
+
+        except Exception as e:
+            send_message(chat_id, f"❌ שגיאה בעיבוד הסרטון:\n\n{e}")
+
+        finally:
+            for path in ["input.mp4", "output.mp4", "audio.wav"]:
+                if os.path.exists(path):
+                    os.remove(path)
+
+    return "ok"
+
+# ======================================================
+# 🧭 דף הבית
+# ======================================================
+@app.route("/")
+def index():
+    return "✅ Telegram + Groq Hebrew Subtitle Bot is running!"
+
+# ======================================================
+# 🚀 הפעלת השרת
+# ======================================================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
