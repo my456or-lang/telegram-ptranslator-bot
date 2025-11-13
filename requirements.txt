@@ -1,6 +1,5 @@
-pyTelegramBotAPI
-moviepy==1.0.3
-langdetect
-Flask
-groq
+telebot
 requests
+moviepy
+deep-translator
+groq
