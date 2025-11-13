@@ -1,7 +1,7 @@
 import os
 import requests
 from flask import Flask, request
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
 
 app = Flask(__name__)
 
@@ -22,19 +22,34 @@ def add_hebrew_subtitles(input_path, output_path, text):
     # MoviePy לא תומך RTL → לכן הופכים את המחרוזת ידנית
     text = text[::-1]
 
+    # ✅ שימוש ב־method='label' עוקף את באג ה־ImageMagick
     txt_clip = TextClip(
         text,
         fontsize=60,
         color='white',
         font=font_path,
-        method='caption',
-        align='East',  # יישור לימין
-        size=(clip.w - 100, None)
+        method='label',  # עוקף בעיית ImageMagick
     )
 
-    txt_clip = txt_clip.set_position(('center', clip.h - 150)).set_duration(clip.duration)
-    result = CompositeVideoClip([clip, txt_clip])
-    result.write_videofile(output_path, codec="libx264", audio_codec="aac")
+    # רקע שחור שקוף מאחורי הכתוביות
+    background = ColorClip(size=(txt_clip.w + 40, txt_clip.h + 20), color=(0, 0, 0))
+    background = background.set_opacity(0.6)
+
+    # שילוב רקע וטקסט
+    txt_with_bg = CompositeVideoClip(
+        [
+            background.set_position(("center", "center")),
+            txt_clip.set_position(("center", "center"))
+        ],
+        size=background.size
+    )
+
+    # מיקום הכתוביות בתחתית הסרטון
+    txt_with_bg = txt_with_bg.set_position(("center", clip.h - 150)).set_duration(clip.duration)
+
+    # חיבור הכתוביות לסרטון
+    final = CompositeVideoClip([clip, txt_with_bg])
+    final.write_videofile(output_path, codec="libx264", audio_codec="aac")
 
 # ======================================================
 # 📩 שליחת הודעה בטלגרם
