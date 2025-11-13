@@ -1,5 +1,6 @@
 pyTelegramBotAPI
-moviepy
+moviepy==1.0.3
 langdetect
 Flask
 groq
+requests
