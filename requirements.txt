@@ -1,5 +1,7 @@
 moviepy==1.0.3
 imageio==2.33.1
+imageio-ffmpeg==0.4.9
+decorator<5,>=4.0.2
 
 pyTelegramBotAPI
 requests
@@ -7,3 +9,4 @@ pillow
 deep-translator
 groq
 python-dotenv
+Flask
