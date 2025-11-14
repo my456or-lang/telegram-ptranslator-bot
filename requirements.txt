@@ -1,6 +1,5 @@
 moviepy==1.0.3
 imageio==2.33.1
-imageio-ffmpeg==0.4.9
 decorator==5.1.1
 
 pyTelegramBotAPI
