@@ -1,25 +1,41 @@
-# Step 1: Use Python base image
 FROM python:3.11-slim
 
-# Step 2: Set working directory
+# התקנת חבילות מערכת
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    fonts-dejavu \
+    fonts-dejavu-core \
+    fonts-liberation \
+    fonts-liberation2 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# יצירת תיקיית עבודה
 WORKDIR /app
 
-# Step 3: Install system packages (FFmpeg)
-RUN apt-get update && \
-    apt-get install -y ffmpeg && \
-    apt-get clean
+# יצירת תיקיית גופנים
+RUN mkdir -p /app/fonts
 
-# Step 4: Copy requirements
+# העתקת הגופן העברי
+COPY fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf /app/fonts/
+
+# העתקה והתקנת requirements
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Step 5: Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Step 6: Copy app files
+# העתקת כל הקבצים
 COPY . .
 
-# Step 7: Expose port
-EXPOSE 8080
+# בדיקה שהגופן קיים
+RUN ls -la /app/fonts/
 
-# Step 8: Run the app
+# יציאת Flask
+EXPOSE 10000
+
+# הרצת האפליקציה
 CMD ["python", "app.py"]
