@@ -1,18 +1,10 @@
-# 🎬 Telegram Subtitle Bot (Groq Whisper + Hebrew Translation)
+# Telegram Subtitle Bot (Groq Whisper + burn SRT)
 
-בוט טלגרם שמתרגם **אוטומטית כתוביות מאנגלית לעברית** על גבי סרטונים.
-מבוסס על:
-- 🧠 Whisper דרך Groq API לתמלול מהיר
-- 🌍 Google Translator לתרגום לעברית
-- 🎨 MoviePy + Pillow להוספת כתוביות מעוצבות
-- 🐳 Docker ו-Flask להרצה נוחה בענן
+דרישות סביבת ריצה:
+- Docker / Render / כל שרת שמריץ Docker
+- משתני סביבה: `TELEGRAM_TOKEN`, `GROQ_API_KEY`, `PORT=8080`
 
----
-
-## 🚀 הפעלה מקומית (ללא Docker)
-
-1. צור קובץ `.env` לפי `.env.example`  
-   והזן את:
-   ```bash
-   TELEGRAM_BOT_TOKEN=...
-   GROQ_API_KEY=...
+התקנה והרצה (Docker):
+```bash
+docker build -t tg-subtitles .
+docker run -e TELEGRAM_TOKEN=xxx -e GROQ_API_KEY=yyy -p 8080:8080 tg-subtitles
