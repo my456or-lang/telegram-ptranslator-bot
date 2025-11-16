@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: telegram-subtitle-bot
+    env: python
+    buildCommand: "./render-build.sh"
+    startCommand: "gunicorn app:app --timeout 300 --preload"
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
