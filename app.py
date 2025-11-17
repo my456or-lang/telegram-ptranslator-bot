@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-# נתיב לגופן העברי
-HEBREW_FONT_PATH = "fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"
+# נתיב לגופן העברי שלך
+HEBREW_FONT_PATH = "/app/fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"
 
 @app.route('/')
 def home():
@@ -37,7 +37,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚠️ מגבלות:\n"
         "• סרטון עד 5 דקות\n"
         "• גודל עד 20MB\n\n"
-        "⚡ כתוביות עם גופן עברי מקצועי!"
+        "⚡ כתוביות עם גופן Noto Sans Hebrew!"
     )
 
 def transcribe_with_groq(audio_path):
@@ -77,10 +77,15 @@ def create_subtitle_image(text, width, height):
     
     # טעינת הגופן העברי
     try:
-        font = ImageFont.truetype(HEBREW_FONT_PATH, 48)
+        if os.path.exists(HEBREW_FONT_PATH):
+            font = ImageFont.truetype(HEBREW_FONT_PATH, 50)
+            logger.info(f"✅ Loaded Hebrew font: {HEBREW_FONT_PATH}")
+        else:
+            logger.warning(f"⚠️ Font not found at {HEBREW_FONT_PATH}, using fallback")
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
     except Exception as e:
-        logger.error(f"Failed to load Hebrew font: {e}")
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+        logger.error(f"❌ Failed to load font: {e}")
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
     
     # חלוקת הטקסט לשורות אם ארוך מדי
     max_width = width - 100
@@ -90,8 +95,13 @@ def create_subtitle_image(text, width, height):
     
     for word in words:
         test_line = ' '.join(current_line + [word])
-        bbox = draw.textbbox((0, 0), test_line, font=font)
-        if bbox[2] - bbox[0] <= max_width:
+        try:
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+        except:
+            line_width = draw.textsize(test_line, font=font)[0]
+        
+        if line_width <= max_width:
             current_line.append(word)
         else:
             if current_line:
@@ -102,15 +112,17 @@ def create_subtitle_image(text, width, height):
         lines.append(' '.join(current_line))
     
     # חישוב גובה כולל
-    line_height = 60
+    line_height = 65
     total_height = len(lines) * line_height
-    y_start = height - total_height - 20
+    y_start = height - total_height - 15
     
     # ציור כל שורה
     for i, line in enumerate(lines):
-        bbox = draw.textbbox((0, 0), line, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
+        try:
+            bbox = draw.textbbox((0, 0), line, font=font)
+            text_width = bbox[2] - bbox[0]
+        except:
+            text_width = draw.textsize(line, font=font)[0]
         
         x = (width - text_width) // 2
         y = y_start + (i * line_height)
@@ -135,7 +147,7 @@ def create_subtitle_image(text, width, height):
 def create_subtitle_clip(text, start, duration, video_size):
     """יצירת קליפ כתובית"""
     width, height = video_size
-    subtitle_height = 120
+    subtitle_height = 130
     
     def make_frame(t):
         return create_subtitle_image(text, width, subtitle_height)
@@ -224,7 +236,7 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         'end': seg['end'],
                         'text': translated
                     })
-                    logger.info(f"✅ {i+1}/{len(segments)}: {text[:20]}... → {translated[:20]}...")
+                    logger.info(f"✅ {i+1}/{len(segments)}: {translated[:30]}...")
                 except Exception as e:
                     logger.error(f"❌ Translation error: {e}")
                     continue
@@ -361,11 +373,10 @@ def run_bot():
         return
     
     # בדיקה שהגופן קיים
-    if not os.path.exists(HEBREW_FONT_PATH):
-        logger.error(f"❌ Hebrew font not found at: {HEBREW_FONT_PATH}")
-        return
-    else:
+    if os.path.exists(HEBREW_FONT_PATH):
         logger.info(f"✅ Hebrew font loaded: {HEBREW_FONT_PATH}")
+    else:
+        logger.warning(f"⚠️ Hebrew font not found at: {HEBREW_FONT_PATH}")
     
     application = Application.builder().token(TOKEN).build()
     
@@ -373,7 +384,7 @@ def run_bot():
     application.add_handler(MessageHandler(filters.VIDEO, handle_video))
     application.add_error_handler(error_handler)
     
-    logger.info("🤖 Bot starting with Groq and Hebrew font...")
+    logger.info("🤖 Bot starting with Groq and Noto Sans Hebrew...")
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
