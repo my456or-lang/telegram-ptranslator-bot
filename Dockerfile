@@ -3,6 +3,7 @@ FROM python:3.11-slim
 # התקנת חבילות מערכת
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    wget \
     fonts-dejavu \
     fonts-dejavu-core \
     fonts-liberation \
@@ -17,11 +18,11 @@ RUN apt-get update && apt-get install -y \
 # יצירת תיקיית עבודה
 WORKDIR /app
 
-# יצירת תיקיית גופנים
-RUN mkdir -p /app/fonts
-
-# העתקת הגופן העברי
-COPY fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf /app/fonts/
+# יצירת תיקיית גופנים והורדת הגופן העברי
+RUN mkdir -p /app/fonts && \
+    wget -O /app/fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf \
+    "https://github.com/notofonts/hebrew/raw/main/fonts/NotoSansHebrew/googlefonts/variable-ttf/NotoSansHebrew%5Bwdth%2Cwght%5D.ttf" && \
+    ls -lh /app/fonts/
 
 # העתקה והתקנת requirements
 COPY requirements.txt .
@@ -30,9 +31,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 # העתקת כל הקבצים
 COPY . .
-
-# בדיקה שהגופן קיים
-RUN ls -la /app/fonts/
 
 # יציאת Flask
 EXPOSE 10000
