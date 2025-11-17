@@ -35,9 +35,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ואני אחזיר לך את הסרטון עם כתוביות בעברית! 🇮🇱\n\n"
         "📹 פשוט שלח סרטון ואני אתחיל...\n\n"
         "⚠️ מגבלות:\n"
-        "• סרטון עד 5 דקות\n"
-        "• גודל עד 20MB\n\n"
-        "⚡ כתוביות עם גופן Noto Sans Hebrew!"
+        "• סרטון עד 10 דקות\n"
+        "• גודל עד 50MB\n\n"
+        "⚡ כתוביות מקצועיות עם רקע מעומעם!"
     )
 
 def transcribe_with_groq(audio_path):
@@ -70,22 +70,22 @@ def transcribe_with_groq(audio_path):
     return response.json()
 
 def create_subtitle_image(text, width, height):
-    """יצירת תמונה עם טקסט עברי בגופן Noto Sans"""
+    """יצירת תמונה עם טקסט עברי ורקע מעומעם צהבהב"""
     # יצירת תמונה שקופה
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     
-    # טעינת הגופן העברי
+    # טעינת הגופן העברי - גופן קטן יותר
     try:
         if os.path.exists(HEBREW_FONT_PATH):
-            font = ImageFont.truetype(HEBREW_FONT_PATH, 50)
+            font = ImageFont.truetype(HEBREW_FONT_PATH, 38)  # הקטנה מ-50 ל-38
             logger.info(f"✅ Loaded Hebrew font: {HEBREW_FONT_PATH}")
         else:
             logger.warning(f"⚠️ Font not found at {HEBREW_FONT_PATH}, using fallback")
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 38)
     except Exception as e:
         logger.error(f"❌ Failed to load font: {e}")
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 50)
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 38)
     
     # חלוקת הטקסט לשורות אם ארוך מדי
     max_width = width - 100
@@ -112,30 +112,39 @@ def create_subtitle_image(text, width, height):
         lines.append(' '.join(current_line))
     
     # חישוב גובה כולל
-    line_height = 65
+    line_height = 50  # הקטנה מ-65 ל-50
     total_height = len(lines) * line_height
-    y_start = height - total_height - 15
+    y_start = height - total_height - 10
     
     # ציור כל שורה
     for i, line in enumerate(lines):
         try:
             bbox = draw.textbbox((0, 0), line, font=font)
             text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
         except:
-            text_width = draw.textsize(line, font=font)[0]
+            text_width, text_height = draw.textsize(line, font=font)[0:2]
         
         x = (width - text_width) // 2
         y = y_start + (i * line_height)
         
-        # מתאר שחור עבה (4 פיקסלים)
-        outline_width = 4
+        # רקע מעומעם בגוון צהבהב-שחור (כמו בסרטים!)
+        padding = 8
+        # צבע: שחור עם גוון צהוב קל (R=40, G=35, B=20) ושקיפות 150
+        draw.rectangle(
+            [x - padding, y - padding, x + text_width + padding, y + text_height + padding],
+            fill=(40, 35, 20, 150)  # צהבהב כהה עם שקיפות
+        )
+        
+        # מתאר שחור (3 פיקסלים - קצת יותר דק)
+        outline_width = 3
         for adj_x in range(-outline_width, outline_width + 1):
             for adj_y in range(-outline_width, outline_width + 1):
                 if adj_x != 0 or adj_y != 0:
                     draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
         
-        # הטקסט הלבן
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+        # הטקסט הצהבהב-לבן (כמו בסרטים!)
+        draw.text((x, y), line, font=font, fill=(255, 255, 230, 255))  # לבן-צהבהב
     
     # המרה ל-RGB
     rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
@@ -145,15 +154,16 @@ def create_subtitle_image(text, width, height):
     return np.array(rgb_img)
 
 def create_subtitle_clip(text, start, duration, video_size):
-    """יצירת קליפ כתובית"""
+    """יצירת קליפ כתובית עם איחור של 1.8 שניות"""
     width, height = video_size
-    subtitle_height = 130
+    subtitle_height = 100  # הקטנה מ-130 ל-100
     
     def make_frame(t):
         return create_subtitle_image(text, width, subtitle_height)
     
     clip = VideoClip(make_frame, duration=duration)
-    clip = clip.set_start(start)
+    # הוספת איחור של 1.8 שניות
+    clip = clip.set_start(start + 1.8)
     clip = clip.set_position(('center', height - subtitle_height - 10))
     
     return clip
@@ -166,9 +176,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_video = None
     
     try:
-        # בדיקת גודל
-        if update.message.video.file_size > 20 * 1024 * 1024:
-            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 20MB")
+        # בדיקת גודל - הגדלה ל-50MB
+        if update.message.video.file_size > 50 * 1024 * 1024:
+            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 50MB")
             return
         
         status_msg = await update.message.reply_text("⏳ מעבד את הסרטון...")
@@ -186,9 +196,9 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text("🎤 מחלץ אודיו...")
         video = VideoFileClip(video_path)
         
-        # בדיקת אורך
-        if video.duration > 300:
-            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 5 דקות")
+        # בדיקת אורך - הגדלה ל-10 דקות
+        if video.duration > 600:  # 10 דקות
+            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 10 דקות")
             video.close()
             return
         
