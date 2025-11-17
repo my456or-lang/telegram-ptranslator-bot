@@ -1,330 +1,393 @@
 import os
-import threading
-import tempfile
-import traceback
-import subprocess
-import requests
-from flask import Flask
-import telebot
-from groq import Groq
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from deep_translator import GoogleTranslator
-from moviepy.editor import VideoFileClip, CompositeVideoClip, ImageClip
+from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip
+import tempfile
+from flask import Flask
+from threading import Thread
+import requests
+import gc
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-from bidi.algorithm import get_display
-import time
-import json
 
-# ---------------------------
-# CONFIG / ENV
-# ---------------------------
-BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
-PORT = int(os.environ.get("PORT", 8080))
-
-if not BOT_TOKEN:
-    raise RuntimeError("TELEGRAM_TOKEN לא מוגדר")
-if not GROQ_API_KEY:
-    raise RuntimeError("GROQ_API_KEY לא מוגדר")
-
-bot = telebot.TeleBot(BOT_TOKEN, parse_mode=None)
-client = Groq(api_key=GROQ_API_KEY)
-# deep-translator expects 'iw' mapping for Hebrew in some versions
-translator = GoogleTranslator(source="auto", target="iw")
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-@app.route("/")
+# נתיב לגופן העברי
+HEBREW_FONT_PATH = "fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"
+
+@app.route('/')
 def home():
-    return "Telegram subtitle bot — running ✅"
+    return "🤖 Bot is running with Groq!"
 
-# ---------------------------
-# Helpers: timestamps, RTL, fonts
-# ---------------------------
-def format_timestamp(seconds: float):
-    # returns "HH:MM:SS,mmm"
-    ms = int((seconds - int(seconds)) * 1000)
-    s = int(seconds)
-    hh = s // 3600
-    mm = (s % 3600) // 60
-    ss = s % 60
-    return f"{hh:02d}:{mm:02d}:{ss:02d},{ms:03d}"
+@app.route('/health')
+def health():
+    return "OK", 200
 
-def contains_hebrew(text: str) -> bool:
-    return any('\u0590' <= ch <= '\u05FF' for ch in text)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🎬 שלום! אני בוט תרגום כתוביות (Powered by Groq ⚡)\n\n"
+        "שלח לי סרטון עם אודיו באנגלית,\n"
+        "ואני אחזיר לך את הסרטון עם כתוביות בעברית! 🇮🇱\n\n"
+        "📹 פשוט שלח סרטון ואני אתחיל...\n\n"
+        "⚠️ מגבלות:\n"
+        "• סרטון עד 5 דקות\n"
+        "• גודל עד 20MB\n\n"
+        "⚡ כתוביות עם גופן עברי מקצועי!"
+    )
 
-def prepare_hebrew_text_for_display(text: str) -> str:
-    # For Hebrew: use bidi.get_display (do not apply arabic_reshaper)
+def transcribe_with_groq(audio_path):
+    """תמלול אודיו באמצעות Groq API"""
+    GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+    
+    if not GROQ_API_KEY:
+        raise Exception("GROQ_API_KEY לא מוגדר!")
+    
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}"
+    }
+    
+    with open(audio_path, 'rb') as audio_file:
+        files = {
+            'file': audio_file,
+            'model': (None, 'whisper-large-v3'),
+            'language': (None, 'en'),
+            'response_format': (None, 'verbose_json'),
+            'timestamp_granularities[]': (None, 'segment')
+        }
+        
+        response = requests.post(url, headers=headers, files=files, timeout=300)
+    
+    if response.status_code != 200:
+        raise Exception(f"Groq API Error: {response.text}")
+    
+    return response.json()
+
+def create_subtitle_image(text, width, height):
+    """יצירת תמונה עם טקסט עברי בגופן Noto Sans"""
+    # יצירת תמונה שקופה
+    img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    
+    # טעינת הגופן העברי
     try:
-        if contains_hebrew(text):
-            return get_display(text)
-    except Exception:
-        pass
-    return text
-
-def find_font_path():
-    # Check repo font first
-    custom = "fonts/NotoSansHebrew-VariableFont_wdth,wght.ttf"
-    if os.path.exists(custom):
-        return custom
-    # fallback fonts
-    for p in [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-    ]:
-        if os.path.exists(p):
-            return p
-    return None
-
-# ---------------------------
-# Groq transcription
-# ---------------------------
-def transcribe_with_groq(file_path: str):
-    # request verbose_json to receive segments
-    with open(file_path, "rb") as f:
-        resp = client.audio.transcriptions.create(
-            model="whisper-large-v3-turbo",
-            file=f,
-            response_format="verbose_json"
-        )
-    # resp may be dict-like
-    if isinstance(resp, dict):
-        return resp
-    try:
-        return json.loads(str(resp))
-    except Exception:
-        return resp
-
-# ---------------------------
-# Translate text
-# ---------------------------
-def translate_text(text: str) -> str:
-    try:
-        return translator.translate(text)
+        font = ImageFont.truetype(HEBREW_FONT_PATH, 48)
     except Exception as e:
-        # fallback: return original
-        return text
-
-# ---------------------------
-# Create SRT from segments
-# ---------------------------
-def create_srt_from_segments(segments, out_path):
-    """
-    segments: list of dicts with 'start','end','text'
-    """
-    with open(out_path, "w", encoding="utf-8") as f:
-        for i, seg in enumerate(segments, start=1):
-            start = float(seg.get("start", 0))
-            end = float(seg.get("end", start + 2))
-            text = str(seg.get("text", "")).strip()
-            # Prepare Hebrew display
-            text = prepare_hebrew_text_for_display(text)
-            f.write(f"{i}\n")
-            f.write(f"{format_timestamp(start)} --> {format_timestamp(end)}\n")
-            f.write(f"{text}\n\n")
-
-# ---------------------------
-# Burn SRT with ffmpeg (fast)
-# ---------------------------
-def burn_srt_with_ffmpeg(video_path: str, srt_path: str):
-    # ffmpeg subtitles filter needs the path escaped properly
-    out_path = video_path.replace(".mp4", "_subtitled.mp4")
-    # Use -y to overwrite; ensure locales/encoding are fine by forcing UTF-8 SRT
-    # We try to include fonts if necessary via ASS style but simple subtitles should work.
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", video_path,
-        "-vf", f"subtitles={srt_path}",
-        "-c:a", "copy",
-        out_path
-    ]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {proc.stderr[:1000]}")
-    return out_path
-
-# ---------------------------
-# Fallback: burn by rendering per-segment images (always works, slower)
-# ---------------------------
-def burn_with_moviepy_segments(video_path: str, segments):
-    clip = VideoFileClip(video_path)
-    w, h = clip.w, clip.h
-    subtitle_clips = []
-    font_path = find_font_path()
-    for seg in segments:
-        start = float(seg.get("start", 0))
-        end = float(seg.get("end", start + 2))
-        text = str(seg.get("text", "")).strip()
-        text = prepare_hebrew_text_for_display(text)
-
-        # create image (PIL) sized to video width
-        fontsize = max(20, int(w / 36))
-        if font_path:
-            font = ImageFont.truetype(font_path, fontsize)
+        logger.error(f"Failed to load Hebrew font: {e}")
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 48)
+    
+    # חלוקת הטקסט לשורות אם ארוך מדי
+    max_width = width - 100
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        test_line = ' '.join(current_line + [word])
+        bbox = draw.textbbox((0, 0), test_line, font=font)
+        if bbox[2] - bbox[0] <= max_width:
+            current_line.append(word)
         else:
-            font = ImageFont.load_default()
+            if current_line:
+                lines.append(' '.join(current_line))
+            current_line = [word]
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    # חישוב גובה כולל
+    line_height = 60
+    total_height = len(lines) * line_height
+    y_start = height - total_height - 20
+    
+    # ציור כל שורה
+    for i, line in enumerate(lines):
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        
+        x = (width - text_width) // 2
+        y = y_start + (i * line_height)
+        
+        # מתאר שחור עבה (4 פיקסלים)
+        outline_width = 4
+        for adj_x in range(-outline_width, outline_width + 1):
+            for adj_y in range(-outline_width, outline_width + 1):
+                if adj_x != 0 or adj_y != 0:
+                    draw.text((x + adj_x, y + adj_y), line, font=font, fill=(0, 0, 0, 255))
+        
+        # הטקסט הלבן
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+    
+    # המרה ל-RGB
+    rgb_img = Image.new('RGB', (width, height), (0, 0, 0))
+    r, g, b, a = img.split()
+    rgb_img.paste(img, (0, 0), a)
+    
+    return np.array(rgb_img)
 
-        # measure and wrap
-        dummy = Image.new("RGBA", (10, 10), (0,0,0,0))
-        draw = ImageDraw.Draw(dummy)
-        max_width = int(w * 0.92)
-        # naive wrap
-        words = text.split()
-        lines = []
-        cur = ""
-        for word in words:
-            cand = (cur + " " + word).strip() if cur else word
-            bbox = draw.textbbox((0,0), cand, font=font, stroke_width=2)
-            if bbox[2] - bbox[0] <= max_width:
-                cur = cand
-            else:
-                if cur:
-                    lines.append(cur)
-                cur = word
-        if cur:
-            lines.append(cur)
+def create_subtitle_clip(text, start, duration, video_size):
+    """יצירת קליפ כתובית"""
+    width, height = video_size
+    subtitle_height = 120
+    
+    def make_frame(t):
+        return create_subtitle_image(text, width, subtitle_height)
+    
+    clip = VideoClip(make_frame, duration=duration)
+    clip = clip.set_start(start)
+    clip = clip.set_position(('center', height - subtitle_height - 10))
+    
+    return clip
 
-        line_h = draw.textbbox((0,0), "A", font=font)[3] - draw.textbbox((0,0), "A", font=font)[1]
-        total_h = line_h * len(lines) + 24
-        total_w = max_width
-        img = Image.new("RGBA", (int(total_w), int(total_h)), (0,0,0,160))
-        d = ImageDraw.Draw(img)
-        y = 8
-        for ln in lines:
-            bbox = d.textbbox((0,0), ln, font=font, stroke_width=2)
-            tw = bbox[2] - bbox[0]
-            x = img.width - 12 - tw  # right align
-            try:
-                d.text((x, y), ln, font=font, fill=(255,255,255,255), stroke_width=2, stroke_fill=(0,0,0,255))
-            except TypeError:
-                # fallback
-                for ox,oy in [(-1,0),(1,0),(0,-1),(0,1)]:
-                    d.text((x+ox,y+oy), ln, font=font, fill=(0,0,0,255))
-                d.text((x,y), ln, font=font, fill=(255,255,255,255))
-            y += line_h
-        arr = np.array(img)
-        ic = ImageClip(arr).set_start(max(0, start)).set_duration(max(0.05, end - start)).set_position(("center", h - img.height - 20))
-        subtitle_clips.append(ic)
-
-    final = CompositeVideoClip([clip] + subtitle_clips)
-    out_path = video_path.replace(".mp4", "_subtitled.mp4")
-    final.write_videofile(out_path, codec="libx264", audio_codec="aac", threads=2, preset="ultrafast", verbose=False)
-    clip.close()
-    final.close()
-    return out_path
-
-# ---------------------------
-# Telegram handlers
-# ---------------------------
-@bot.message_handler(commands=['start'])
-def on_start(msg):
-    bot.reply_to(msg, "👋 היי! שלח סרטון (מקסימום 5 דקות) ואני אחזיר אותו עם כתוביות בעברית (SRT + וידאו עם כתוביות).")
-
-@bot.message_handler(content_types=['video'])
-def handle_video(message):
-    chat_id = message.chat.id
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    video_path = None
+    audio_path = None
+    output_path = None
+    video = None
+    final_video = None
+    
     try:
-        bot.send_message(chat_id, "🎬 מוריד את הסרטון...")
-        file_info = bot.get_file(message.video.file_id)
-        file_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
-        resp = requests.get(file_url, timeout=120)
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-        tmp.write(resp.content)
-        tmp.flush()
-        tmp.close()
-
-        # quick duration check
-        try:
-            clip = VideoFileClip(tmp.name)
-            duration = clip.duration
-            clip.close()
-            if duration > 5 * 60 + 5:
-                bot.send_message(chat_id, "❌ הסרטון ארוך מדי — המקסימום הוא 5 דקות.")
-                os.remove(tmp.name)
-                return
-        except Exception:
-            pass
-
-        bot.send_message(chat_id, "🎧 מתמלל (Groq Whisper)... זה עשוי לקחת זמן קצר...")
-        resp_json = transcribe_with_groq(tmp.name)
-        # resp_json expected to include 'segments'
-        segments = []
-        if isinstance(resp_json, dict) and 'segments' in resp_json:
-            segments = resp_json['segments']
-        else:
-            # try attribute access
-            segments = getattr(resp_json, 'segments', []) or []
-
-        if not segments:
-            # try to get raw text as one segment
-            text = resp_json.get('text') if isinstance(resp_json, dict) else str(resp_json)
-            segments = [{"start": 0.0, "end":  max(2.0, min(10.0, len(text)/10 + 1)), "text": text}]
-
-        bot.send_message(chat_id, f"🌍 מתרגם {len(segments)} מקטעים לעברית...")
-        # translate each segment text
-        for seg in segments:
-            seg['orig_text'] = seg.get('text', '')
-            try:
-                seg['text'] = translate_text(seg['orig_text'])
-            except Exception:
-                seg['text'] = seg.get('orig_text', '')
-
-        # create SRT
-        srt_path = tempfile.NamedTemporaryFile(delete=False, suffix=".srt").name
-        create_srt_from_segments(segments, srt_path)
-
-        bot.send_document(chat_id, open(srt_path, "rb"))
-        bot.send_message(chat_id, "✅ קובץ SRT נשלח. מנסה לשרוף כתוביות לתוך הווידאו (FFmpeg)...")
-
-        # try ffmpeg burn
-        try:
-            out_video = burn_srt_with_ffmpeg(tmp.name, srt_path)
-            bot.send_message(chat_id, "📤 הסרטון מוכן — מעלה אותו עכשיו...")
-            with open(out_video, "rb") as f:
-                bot.send_video(chat_id, f, caption="✅ הנה הסרטון שלך עם כתוביות (FFmpeg burn).")
-            # cleanup
-            os.remove(tmp.name)
-            os.remove(out_video)
-            os.remove(srt_path)
+        # בדיקת גודל
+        if update.message.video.file_size > 20 * 1024 * 1024:
+            await update.message.reply_text("❌ הסרטון גדול מדי! מקסימום 20MB")
             return
-        except Exception as e:
-            # ffmpeg failed — fallback
-            bot.send_message(chat_id, f"⚠️ FFmpeg נכשל (מעבר לגיבוי). מנסה תהליך גיבוי איטי יותר...\n\n{e}")
-
-        # fallback: burn by MoviePy + PIL segments
-        try:
-            out_video = burn_with_moviepy_segments(tmp.name, segments)
-            bot.send_message(chat_id, "📤 הסרטון מוכן (גיבוי ברינדור). מעלה עכשיו...")
-            with open(out_video, "rb") as f:
-                bot.send_video(chat_id, f, caption="✅ הנה הסרטון שלך עם כתוביות (fallback).")
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ נכשל ברינדור הכתוביות: {e}\n{traceback.format_exc()}")
-
-        # cleanup
-        try:
-            os.remove(tmp.name)
-        except:
-            pass
-        try:
-            os.remove(srt_path)
-        except:
-            pass
-        try:
-            os.remove(out_video)
-        except:
-            pass
-
+        
+        status_msg = await update.message.reply_text("⏳ מעבד את הסרטון...")
+        
+        # הורדת הסרטון
+        video_file = await update.message.video.get_file()
+        
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
+            await video_file.download_to_drive(temp_video.name)
+            video_path = temp_video.name
+        
+        logger.info(f"✅ Video downloaded: {video_path}")
+        
+        # פתיחת הסרטון
+        await status_msg.edit_text("🎤 מחלץ אודיו...")
+        video = VideoFileClip(video_path)
+        
+        # בדיקת אורך
+        if video.duration > 300:
+            await update.message.reply_text("❌ הסרטון ארוך מדי! מקסימום 5 דקות")
+            video.close()
+            return
+        
+        # בדיקת אודיו
+        if video.audio is None:
+            await update.message.reply_text("❌ הסרטון לא מכיל אודיו!")
+            video.close()
+            return
+        
+        # חילוץ אודיו
+        audio_path = video_path.replace('.mp4', '.mp3')
+        video.audio.write_audiofile(audio_path, verbose=False, logger=None)
+        
+        video_size = video.size
+        logger.info(f"📐 Video size: {video_size}")
+        
+        # שחרור הסרטון זמנית
+        video.close()
+        video = None
+        gc.collect()
+        
+        # תמלול עם Groq
+        await status_msg.edit_text("🗣️ מתמלל דיבור...")
+        result = transcribe_with_groq(audio_path)
+        segments = result.get('segments', [])
+        
+        logger.info(f"📝 Found {len(segments)} segments")
+        
+        if not segments:
+            await update.message.reply_text("❌ לא נמצא דיבור באודיו")
+            return
+        
+        # תרגום
+        await status_msg.edit_text("🌍 מתרגם לעברית...")
+        translator = GoogleTranslator(source='en', target='iw')
+        
+        subtitles = []
+        for i, seg in enumerate(segments):
+            text = seg.get('text', '').strip()
+            if text and len(text) > 2:
+                try:
+                    translated = translator.translate(text)
+                    subtitles.append({
+                        'start': seg['start'],
+                        'end': seg['end'],
+                        'text': translated
+                    })
+                    logger.info(f"✅ {i+1}/{len(segments)}: {text[:20]}... → {translated[:20]}...")
+                except Exception as e:
+                    logger.error(f"❌ Translation error: {e}")
+                    continue
+        
+        if not subtitles:
+            await update.message.reply_text("❌ לא נמצא טקסט לתרגום")
+            return
+        
+        logger.info(f"✅ Created {len(subtitles)} Hebrew subtitles")
+        
+        # הוספת כתוביות
+        await status_msg.edit_text(f"🎨 מוסיף {len(subtitles)} כתוביות...")
+        
+        # פתיחת הסרטון שוב
+        video = VideoFileClip(video_path)
+        
+        # יצירת כתוביות
+        txt_clips = []
+        for i, sub in enumerate(subtitles):
+            try:
+                clip = create_subtitle_clip(
+                    sub['text'],
+                    sub['start'],
+                    sub['end'] - sub['start'],
+                    video_size
+                )
+                txt_clips.append(clip)
+                logger.info(f"✅ Subtitle {i+1}/{len(subtitles)}")
+                
+                # עדכון כל 5 כתוביות
+                if (i + 1) % 5 == 0:
+                    try:
+                        await status_msg.edit_text(f"🎨 מוסיף כתוביות... ({i+1}/{len(subtitles)})")
+                    except:
+                        pass
+            except Exception as e:
+                logger.error(f"❌ Failed subtitle {i}: {e}")
+                continue
+        
+        if not txt_clips:
+            await update.message.reply_text("❌ נכשל ביצירת כתוביות")
+            video.close()
+            return
+        
+        logger.info(f"✅ Created {len(txt_clips)} subtitle clips")
+        
+        # שילוב הסרטון עם הכתוביות
+        await status_msg.edit_text("🎬 מרכיב את הסרטון הסופי...")
+        
+        final_video = CompositeVideoClip([video] + txt_clips)
+        output_path = video_path.replace('.mp4', '_sub.mp4')
+        
+        # כתיבת הסרטון
+        final_video.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            preset='ultrafast',
+            threads=2,
+            verbose=False,
+            logger=None
+        )
+        
+        logger.info("✅ Video complete!")
+        
+        # שליחת הסרטון
+        await status_msg.edit_text("📤 שולח...")
+        
+        file_size = os.path.getsize(output_path)
+        logger.info(f"📦 Output file size: {file_size / 1024 / 1024:.2f}MB")
+        
+        with open(output_path, 'rb') as f:
+            await update.message.reply_video(
+                video=f,
+                caption="✅ סרטון עם כתוביות בעברית!\n⚡ Powered by Groq",
+                read_timeout=120,
+                write_timeout=120,
+                connect_timeout=60
+            )
+        
+        await status_msg.delete()
+        logger.info("✅ SUCCESS!")
+        
     except Exception as e:
-        bot.send_message(chat_id, f"❌ שגיאה כללית: {e}\n{traceback.format_exc()}")
+        logger.error(f"❌ ERROR: {e}", exc_info=True)
+        try:
+            await update.message.reply_text(f"❌ שגיאה: {str(e)[:200]}")
+        except:
+            pass
+    
+    finally:
+        # ניקוי
+        logger.info("🧹 Cleaning up...")
+        
+        try:
+            if final_video:
+                final_video.close()
+        except:
+            pass
+        
+        try:
+            if video:
+                video.close()
+        except:
+            pass
+        
+        # מחיקת כל הקבצים הזמניים
+        temp_files = [video_path, audio_path, output_path]
+        
+        for file_path in temp_files:
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+                    logger.info(f"🗑️ Deleted: {file_path}")
+            except Exception as e:
+                logger.error(f"Failed to delete {file_path}: {e}")
+        
+        gc.collect()
+        logger.info("✅ Cleanup complete")
 
-# ---------------------------
-# Run bot + Flask for Render compatibility
-# ---------------------------
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Exception: {context.error}", exc_info=context.error)
+
 def run_bot():
-    # use polling (ensure no webhook active)
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+    TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
+    
+    if not TOKEN:
+        logger.error("❌ TELEGRAM_BOT_TOKEN לא מוגדר!")
+        return
+    
+    GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+    if not GROQ_API_KEY:
+        logger.error("❌ GROQ_API_KEY לא מוגדר!")
+        return
+    
+    # בדיקה שהגופן קיים
+    if not os.path.exists(HEBREW_FONT_PATH):
+        logger.error(f"❌ Hebrew font not found at: {HEBREW_FONT_PATH}")
+        return
+    else:
+        logger.info(f"✅ Hebrew font loaded: {HEBREW_FONT_PATH}")
+    
+    application = Application.builder().token(TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    application.add_error_handler(error_handler)
+    
+    logger.info("🤖 Bot starting with Groq and Hebrew font...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        pool_timeout=60,
+        read_timeout=60,
+        write_timeout=60,
+        connect_timeout=60
+    )
 
-if __name__ == "__main__":
-    t = threading.Thread(target=run_bot, daemon=True)
-    t.start()
-    app.run(host="0.0.0.0", port=PORT)
+def run_flask():
+    port = int(os.environ.get('PORT', 10000))
+    app.run(host='0.0.0.0', port=port, threaded=True)
+
+if __name__ == '__main__':
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    run_bot()
